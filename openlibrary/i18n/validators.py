@@ -1,15 +1,16 @@
-from itertools import groupby
 import re
-from typing import List
+from itertools import groupby
 
-from babel.messages.catalog import TranslationError, Message, Catalog
-from babel.messages.checkers import python_format
+from babel.messages.catalog import (
+    Catalog,
+    Message,
+)
 
 
 def validate(message: Message, catalog: Catalog) -> list[str]:
-    errors = [f'    {str(err)}' for err in message.check(catalog)]
+    errors = [f'    {err}' for err in message.check(catalog)]
     if message.python_format and not message.pluralizable and message.string:
-        errors.extend(_validate_cfmt(message.id, message.string))
+        errors.extend(_validate_cfmt(str(message.id or ''), str(message.string or '')))
 
     return errors
 

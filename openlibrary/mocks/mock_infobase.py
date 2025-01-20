@@ -1,14 +1,20 @@
 """Simple implementation of mock infogami site to use in testing.
 """
-import datetime
+
 import glob
+import itertools
 import json
+import re
+from datetime import datetime
+
 import pytest
 import web
 
-from infogami.infobase import client, common, account, config as infobase_config
 from infogami import config
-
+from infogami.infobase import account, client, common
+from infogami.infobase import config as infobase_config
+from openlibrary.plugins.upstream.models import Changeset
+from openlibrary.plugins.upstream.utils import safeget
 
 key_patterns = {
     'work': '/works/OL%dW',
@@ -33,6 +39,7 @@ class MockSite:
 
         self._cache = {}
         self.docs = {}
+        self.docs_historical = {}
         self.changesets = []
         self.index = []
         self.keys = {'work': 0, 'author': 0, 'edition': 0}
@@ -66,21 +73,28 @@ class MockSite:
             doc['created'] = self.docs[key]['created']
 
         self.docs[key] = doc
+        self.docs_historical[(key, rev)] = doc
 
         return doc
 
-    def save(self, query, comment=None, action=None, data=None, timestamp=None):
-        timestamp = timestamp or datetime.datetime.utcnow()
+    def save(
+        self, query, comment=None, action=None, data=None, timestamp=None, author=None
+    ):
+        timestamp = timestamp or datetime.now()
+
+        if author:
+            author = {"key": author.key}
 
         doc = self._save_doc(query, timestamp)
 
-        changes = [{"key": doc['key'], "revision": doc['revision']}]
+        changes = [web.storage({"key": doc['key'], "revision": doc['revision']})]
         changeset = self._make_changeset(
             timestamp=timestamp,
             kind=action,
             comment=comment,
             data=data,
             changes=changes,
+            author=author,
         )
         self.changesets.append(changeset)
 
@@ -89,13 +103,16 @@ class MockSite:
     def save_many(
         self, query, comment=None, action=None, data=None, timestamp=None, author=None
     ):
-        timestamp = timestamp or datetime.datetime.utcnow()
+        timestamp = timestamp or datetime.now()
         docs = [self._save_doc(doc, timestamp) for doc in query]
 
         if author:
             author = {"key": author.key}
 
-        changes = [{"key": doc['key'], "revision": doc['revision']} for doc in docs]
+        changes = [
+            web.storage({"key": doc['key'], "revision": doc['revision']})
+            for doc in docs
+        ]
         changeset = self._make_changeset(
             timestamp=timestamp,
             kind=action,
@@ -128,7 +145,7 @@ class MockSite:
             "id": id,
             "kind": kind or "update",
             "comment": comment,
-            "data": data,
+            "data": data or {},
             "changes": changes,
             "timestamp": timestamp.isoformat(),
             "author": author,
@@ -136,8 +153,40 @@ class MockSite:
             "bot": False,
         }
 
-    def get(self, key, revision=None):
-        data = self.docs.get(key)
+    def get_change(self, cid: int) -> Changeset:
+        return Changeset(self, self.changesets[cid])
+
+    def recentchanges(self, query):
+        limit = query.pop("limit", 1000)
+        offset = query.pop("offset", 0)
+
+        author = query.pop("author", None)
+
+        if not author:
+            raise NotImplementedError(
+                "MockSite.recentchanges without author not implemented"
+            )
+
+        result = list(
+            itertools.islice(
+                (
+                    Changeset(self, c)
+                    for c in reversed(self.changesets)
+                    if safeget(lambda: c['author']['key']) == author
+                ),
+                offset,
+                offset + limit,
+            )
+        )
+
+        return result
+
+    def get(self, key, revision=None, lazy=False):
+        if revision:
+            data = self.docs_historical.get((key, revision))
+        else:
+            data = self.docs.get(key)
+
         data = data and web.storage(common.parse_query(data))
         return data and client.create_thing(self, key, self._process_dict(data))
 
@@ -175,17 +224,23 @@ class MockSite:
                 # this corrects any nested keys that have been included
                 # in values.
                 flat = common.flatten_dict(v)[0]
-                k += '.' + web.rstrips(flat[0], '.key')
+                k = web.rstrips(k + '.' + flat[0], '.key')
                 v = flat[1]
             keys = {k for k in self.filter_index(self.index, k, v) if k in keys}
 
         keys = sorted(keys)
         return keys[offset : offset + limit]
 
+    def regex_ilike(self, pattern: str, text: str) -> bool:
+        """Construct a regex pattern for ILIKE operation and match against the text."""
+        # Remove '_' to ignore single character matches, the same as Infobase.
+        regex_pattern = re.escape(pattern).replace(r"\*", ".*").replace("_", "")
+        return bool(re.match(regex_pattern, text, re.IGNORECASE))
+
     def filter_index(self, index, name, value):
         operations = {
             "~": lambda i, value: isinstance(i.value, str)
-            and i.value.startswith(web.rstrips(value, "*")),
+            and self.regex_ilike(value, i.value),
             "<": lambda i, value: i.value < value,
             ">": lambda i, value: i.value > value,
             "!": lambda i, value: i.value != value,
@@ -351,7 +406,7 @@ class MockStore(dict):
         return [doc['_key'] for doc in self._query(**kw)]
 
     def values(self, **kw):
-        return [doc for doc in self._query(**kw)]
+        return list(self._query(**kw))
 
     def items(self, **kw):
         return [(doc["_key"], doc) for doc in self._query(**kw)]
@@ -366,8 +421,9 @@ def mock_site(request):
 
     def read_types():
         for path in glob.glob("openlibrary/plugins/openlibrary/types/*.type"):
-            text = open(path).read()
-            doc = eval(text, dict(true=True, false=False))
+            with open(path) as file:
+                text = file.read()
+            doc = eval(text, {'true': True, 'false': False})
             if isinstance(doc, list):
                 yield from doc
             else:
@@ -391,10 +447,7 @@ def mock_site(request):
     web.ctx.env = web.ctx.environ = web.storage()
     web.ctx.headers = []
 
-    def undo():
-        web.ctx.clear()
-        web.ctx.update(old_ctx)
+    yield site
 
-    request.addfinalizer(undo)
-
-    return site
+    web.ctx.clear()
+    web.ctx.update(old_ctx)

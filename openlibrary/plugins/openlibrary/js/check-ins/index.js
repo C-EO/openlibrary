@@ -355,9 +355,9 @@ function closeDialog(workOlid) {
 function showDateView(workOlid, year, month, day) {
     let date = year
     if (month) {
-        date += `-${month}`
+        date += `-${month.padStart(2, '0')}`
         if (day) {
-            date += `-${day}`
+            date += `-${day.padStart(2, '0')}`
         }
     }
     const displayElement = document.querySelector(`#check-in-display-${workOlid}`)
@@ -530,8 +530,12 @@ function addGoalSubmissionListener(submitButton) {
                     if (isDeleted) {
                         const chipGroup = yearlyGoalSection.querySelector('.chip-group')
                         const goalContainer = yearlyGoalSection.querySelector('#reading-goal-container')
-                        goalContainer.remove()
-                        chipGroup.classList.remove('hidden')
+                        if (chipGroup) {
+                            chipGroup.classList.remove('hidden')
+                        }
+                        if (goalContainer) {
+                            goalContainer.remove()
+                        }
                     } else {
                         const progressComponent = modal.closest('.reading-goal-progress')
                         updateProgressComponent(progressComponent, Number(formData.get('goal')))
@@ -563,10 +567,8 @@ function updateProgressComponent(elem, goal) {
 
     // Update view:
     const goalSpan = elem.querySelector('.reading-goal-progress__goal')
-    const percentageSpan = elem.querySelector('.reading-goal-progress__percentage')
     const completedBar = elem.querySelector('.reading-goal-progress__completed')
     goalSpan.textContent = goal
-    percentageSpan.textContent = `(${percentComplete}%)`
     completedBar.style.width = `${Math.min(100, percentComplete)}%`
 }
 
@@ -580,14 +582,15 @@ function updateProgressComponent(elem, goal) {
  * @param {string} goalYear Year that the goal is set for.
  */
 function fetchProgressAndUpdateView(yearlyGoalElem, goalYear) {
-    fetch(`/reading-goal/partials?year=${goalYear}`)
+    fetch(`/reading-goal/partials.json?year=${goalYear}`)
         .then((response) => {
             if (!response.ok) {
                 throw new Error('Failed to fetch progress element')
             }
-            return response.text()
+            return response.json()
         })
-        .then(function(html) {
+        .then(function(data) {
+            const html = data['partials']
             const progress = document.createElement('SPAN')
             progress.id = 'reading-goal-container'
             progress.innerHTML = html

@@ -1,6 +1,8 @@
 """Mock of openlibrary.core.ia module.
 """
+
 import pytest
+
 from openlibrary.core import ia
 
 

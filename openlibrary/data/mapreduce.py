@@ -12,12 +12,13 @@ This works as follows:
   reduce function is applied for each key and its values.
 * The reduced key, value pairs are returned as an iterator.
 """
-import sys
+
+import gzip
 import itertools
+import logging
 import os
 import subprocess
-import logging
-import gzip
+import sys
 
 logger = logging.getLogger("mapreduce")
 
@@ -38,14 +39,14 @@ class Task:
 
         The implementation should yield the key-value pairs.
         """
-        raise NotImplementedError()
+        raise NotImplementedError
 
     def reduce(self, key, values):
         """Function to reduce given values.
 
         The implementation should return a key-value pair, with the reduced value.
         """
-        raise NotImplementedError()
+        raise NotImplementedError
 
     def read(self):
         for line in sys.sydin:

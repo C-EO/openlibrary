@@ -1,51 +1,23 @@
 """Subject pages.
 """
-import web
-import json
+
 import datetime
+import json
+from dataclasses import dataclass
+from typing import Literal
+
+import web
 
 from infogami.plugins.api.code import jsonapi
 from infogami.utils import delegate
 from infogami.utils.view import render_template, safeint
-
-from openlibrary.core.models import Subject
 from openlibrary.core.lending import add_availability
+from openlibrary.core.models import Subject, Tag
 from openlibrary.solr.query_utils import query_dict_to_str
-from openlibrary.utils import str_to_key, finddict
+from openlibrary.utils import str_to_key
 
+__all__ = ["SubjectEngine", "SubjectMeta", "get_subject"]
 
-__all__ = ["SubjectEngine", "get_subject"]
-
-SUBJECTS = [
-    web.storage(
-        name="person",
-        key="people",
-        prefix="/subjects/person:",
-        facet="person_facet",
-        facet_key="person_key",
-    ),
-    web.storage(
-        name="place",
-        key="places",
-        prefix="/subjects/place:",
-        facet="place_facet",
-        facet_key="place_key",
-    ),
-    web.storage(
-        name="time",
-        key="times",
-        prefix="/subjects/time:",
-        facet="time_facet",
-        facet_key="time_key",
-    ),
-    web.storage(
-        name="subject",
-        key="subjects",
-        prefix="/subjects/",
-        facet="subject_facet",
-        facet_key="subject_key",
-    ),
-]
 
 DEFAULT_RESULTS = 12
 MAX_RESULTS = 1000
@@ -64,6 +36,7 @@ class subjects(delegate.page):
             key,
             details=True,
             filters={'public_scan_b': 'false', 'lending_edition_s': '*'},
+            sort=web.input(sort='readinglog').sort,
         )
 
         delegate.context.setdefault('cssfile', 'subject')
@@ -71,6 +44,7 @@ class subjects(delegate.page):
             web.ctx.status = "404 Not Found"
             page = render_template('subjects/notfound.tmpl', key)
         else:
+            self.decorate_with_tags(subj)
             page = render_template("subjects", page=subj)
 
         return page
@@ -84,6 +58,25 @@ class subjects(delegate.page):
             key = key.replace("/places/", "/place:")
             key = key.replace("/times/", "/time:")
         return key
+
+    def decorate_with_tags(self, subject) -> None:
+        if tag_keys := Tag.find(subject.name):
+            tags = web.ctx.site.get_many(tag_keys)
+            subject.disambiguations = tags
+
+            if filtered_tags := [
+                tag for tag in tags if tag.tag_type == subject.subject_type
+            ]:
+                subject.tag = filtered_tags[0]
+                # Remove matching subject tag from disambiguated tags:
+                subject.disambiguations = list(set(tags) - {subject.tag})
+
+            for tag in subject.disambiguations:
+                tag.subject_key = (
+                    f"/subjects/{tag.name}"
+                    if tag.tag_type == "subject"
+                    else f"/subjects/{tag.tag_type}:{tag.name}"
+                )
 
 
 class subjects_json(delegate.page):
@@ -150,14 +143,24 @@ class subjects_json(delegate.page):
         return key
 
 
+SubjectType = Literal["subject", "place", "person", "time"]
+
+SubjectPseudoKey = str
+"""
+The key-like paths for a subject, eg:
+- `/subjects/foo`
+- `/subjects/person:harry_potter`
+"""
+
+
 def get_subject(
-    key: str,
+    key: SubjectPseudoKey,
     details=False,
     offset=0,
     sort='editions',
     limit=DEFAULT_RESULTS,
     **filters,
-):
+) -> Subject:
     """Returns data related to a subject.
 
     By default, it returns a storage object with key, name, work_count and works.
@@ -213,19 +216,17 @@ def get_subject(
 
     Optional arguments has_fulltext and published_in can be passed to filter the results.
     """
-
-    def create_engine():
-        for d in SUBJECTS:
-            if key.startswith(d.prefix):
-                Engine = d.get("engine") or SubjectEngine
-                return Engine()
-        return SubjectEngine()
-
-    engine = create_engine()
-    subject_results = engine.get_subject(
-        key, details=details, offset=offset, sort=sort, limit=limit, **filters
+    EngineClass = next(
+        (d.Engine for d in SUBJECTS if key.startswith(d.prefix)), SubjectEngine
     )
-    return subject_results
+    return EngineClass().get_subject(
+        key,
+        details=details,
+        offset=offset,
+        sort=sort,
+        limit=limit,
+        **filters,
+    )
 
 
 class SubjectEngine:
@@ -239,11 +240,12 @@ class SubjectEngine:
         **filters,
     ):
         # Circular imports are everywhere -_-
-        from openlibrary.plugins.worksearch.code import run_solr_query, WorkSearchScheme
+        from openlibrary.plugins.worksearch.code import WorkSearchScheme, run_solr_query
 
         meta = self.get_meta(key)
         subject_type = meta.name
-        name = meta.path.replace("_", " ")
+        path = web.lstrips(key, meta.prefix)
+        name = path.replace("_", " ")
 
         unescaped_filters = {}
         if 'publish_year' in filters:
@@ -253,7 +255,7 @@ class SubjectEngine:
             WorkSearchScheme(),
             {
                 'q': query_dict_to_str(
-                    {meta.facet_key: self.normalize_key(meta.path)},
+                    {meta.facet_key: self.normalize_key(path)},
                     unescaped=unescaped_filters,
                     phrase=True,
                 ),
@@ -356,12 +358,10 @@ class SubjectEngine:
 
         return subject
 
-    def get_meta(self, key):
+    def get_meta(self, key) -> 'SubjectMeta':
         prefix = self.parse_key(key)[0]
-        meta = finddict(SUBJECTS, prefix=prefix)
-
-        meta = web.storage(meta)
-        meta.path = web.lstrips(key, meta.prefix)
+        meta = next((d for d in SUBJECTS if d.prefix == prefix), None)
+        assert meta is not None, "Invalid subject key: {key}"
         return meta
 
     def parse_key(self, key):
@@ -384,9 +384,10 @@ class SubjectEngine:
         elif facet == "author_key":
             return web.storage(name=label, key=f"/authors/{value}", count=count)
         elif facet in ["subject_facet", "person_facet", "place_facet", "time_facet"]:
+            meta = next((d for d in SUBJECTS if d.facet == facet), None)
+            assert meta is not None, "Invalid subject facet: {facet}"
             return web.storage(
-                key=finddict(SUBJECTS, facet=facet).prefix
-                + str_to_key(value).replace(" ", "_"),
+                key=meta.prefix + str_to_key(value).replace(" ", "_"),
                 name=value,
                 count=count,
             )
@@ -424,6 +425,48 @@ class SubjectEngine:
             public_scan=w.get('public_scan_b', bool(w.get('ia'))),
             has_fulltext=w.get('has_fulltext', False),
         )
+
+
+@dataclass
+class SubjectMeta:
+    name: str
+    key: str
+    prefix: str
+    facet: str
+    facet_key: str
+    Engine: type['SubjectEngine'] = SubjectEngine
+
+
+SUBJECTS = [
+    SubjectMeta(
+        name="person",
+        key="people",
+        prefix="/subjects/person:",
+        facet="person_facet",
+        facet_key="person_key",
+    ),
+    SubjectMeta(
+        name="place",
+        key="places",
+        prefix="/subjects/place:",
+        facet="place_facet",
+        facet_key="place_key",
+    ),
+    SubjectMeta(
+        name="time",
+        key="times",
+        prefix="/subjects/time:",
+        facet="time_facet",
+        facet_key="time_key",
+    ),
+    SubjectMeta(
+        name="subject",
+        key="subjects",
+        prefix="/subjects/",
+        facet="subject_facet",
+        facet_key="subject_key",
+    ),
+]
 
 
 def setup():

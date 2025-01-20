@@ -1,14 +1,12 @@
 import datetime
 import json
-from typing import Optional
-import web
 from sqlite3 import IntegrityError
+
 from psycopg2.errors import UniqueViolation
 
 from infogami.utils.view import public
-
-from openlibrary.i18n import gettext as _
 from openlibrary.core import cache
+from openlibrary.i18n import gettext as _
 from openlibrary.utils import dateutil
 
 from . import db
@@ -27,7 +25,6 @@ def get_status_for_view(status_code: int) -> str:
 
 
 class CommunityEditsQueue:
-
     """Schema
     id: Primary identifier
     submitter: username of person that made the request
@@ -92,6 +89,20 @@ class CommunityEditsQueue:
         return oldb.query(query, vars=kwargs)[0]['count']
 
     @classmethod
+    def get_submitters(cls):
+        oldb = db.get_db()
+        query = f'SELECT DISTINCT submitter FROM {cls.TABLENAME}'
+        return list(oldb.query(query))
+
+    @classmethod
+    def get_reviewers(cls):
+        oldb = db.get_db()
+        query = (
+            f'SELECT DISTINCT reviewer FROM {cls.TABLENAME} WHERE reviewer IS NOT NULL'
+        )
+        return list(oldb.query(query))
+
+    @classmethod
     def where_clause(cls, mode, **kwargs):
         wheres = []
 
@@ -109,6 +120,9 @@ class CommunityEditsQueue:
                 if kwargs.get("submitter") is None
                 else "submitter=$submitter"
             )
+        # If status not specified, don't include it
+        if 'status' in kwargs and kwargs.get('status'):
+            wheres.append('status=$status')
         if "url" in kwargs:
             wheres.append("url=$url")
         if "id" in kwargs:
@@ -190,9 +204,7 @@ class CommunityEditsQueue:
         )
 
     @classmethod
-    def assign_request(
-        cls, rid: int, reviewer: Optional[str]
-    ) -> dict[str, Optional[str]]:
+    def assign_request(cls, rid: int, reviewer: str | None) -> dict[str, str | None]:
         """Changes assignees to the request with the given ID.
 
         This method only modifies requests that are not closed.

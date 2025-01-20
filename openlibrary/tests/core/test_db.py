@@ -1,8 +1,9 @@
 import web
-from openlibrary.core.db import get_db
+
+from openlibrary.core.booknotes import Booknotes
 from openlibrary.core.bookshelves import Bookshelves
 from openlibrary.core.bookshelves_events import BookshelvesEvents
-from openlibrary.core.booknotes import Booknotes
+from openlibrary.core.db import get_db
 from openlibrary.core.edits import CommunityEditsQueue
 from openlibrary.core.observations import Observations
 from openlibrary.core.ratings import Ratings
@@ -85,7 +86,7 @@ CREATE TABLE yearly_reading_goals (
 class TestUpdateWorkID:
     @classmethod
     def setup_class(cls):
-        web.config.db_parameters = dict(dbn="sqlite", db=":memory:")
+        web.config.db_parameters = {"dbn": "sqlite", "db": ":memory:"}
         db = get_db()
         db.query(READING_LOG_DDL)
         db.query(BOOKNOTES_DDL)
@@ -226,7 +227,7 @@ class TestUsernameUpdate:
 
     @classmethod
     def setup_class(cls):
-        web.config.db_parameters = dict(dbn="sqlite", db=":memory:")
+        web.config.db_parameters = {"dbn": "sqlite", "db": ":memory:"}
         db = get_db()
         db.query(RATINGS_DDL)
         db.query(OBSERVATIONS_DDL)
@@ -360,7 +361,7 @@ class TestCheckIns:
 
     @classmethod
     def setup_class(cls):
-        web.config.db_parameters = dict(dbn="sqlite", db=":memory:")
+        web.config.db_parameters = {"dbn": "sqlite", "db": ":memory:"}
         db = get_db()
         db.query(BOOKSHELVES_EVENTS_DDL)
 
@@ -505,7 +506,7 @@ class TestYearlyReadingGoals:
 
     @classmethod
     def setup_class(cls):
-        web.config.db_parameters = dict(dbn='sqlite', db=':memory:')
+        web.config.db_parameters = {"dbn": 'sqlite', "db": ':memory:'}
         db = get_db()
         db.query(YEARLY_READING_GOALS_DDL)
 
@@ -556,39 +557,51 @@ class TestYearlyReadingGoals:
 
     def test_update_current_count(self):
         assert (
-            list(
-                self.db.select(
-                    self.TABLENAME, where={'username': '@billy_pilgrim', 'year': 2023}
+            next(
+                iter(
+                    self.db.select(
+                        self.TABLENAME,
+                        where={'username': '@billy_pilgrim', 'year': 2023},
+                    )
                 )
-            )[0]['current']
+            )['current']
             == 0
         )
         YearlyReadingGoals.update_current_count('@billy_pilgrim', 2023, 10)
         assert (
-            list(
-                self.db.select(
-                    self.TABLENAME, where={'username': '@billy_pilgrim', 'year': 2023}
+            next(
+                iter(
+                    self.db.select(
+                        self.TABLENAME,
+                        where={'username': '@billy_pilgrim', 'year': 2023},
+                    )
                 )
-            )[0]['current']
+            )['current']
             == 10
         )
 
     def test_update_target(self):
         assert (
-            list(
-                self.db.select(
-                    self.TABLENAME, where={'username': '@billy_pilgrim', 'year': 2023}
+            next(
+                iter(
+                    self.db.select(
+                        self.TABLENAME,
+                        where={'username': '@billy_pilgrim', 'year': 2023},
+                    )
                 )
-            )[0]['target']
+            )['target']
             == 7
         )
         YearlyReadingGoals.update_target('@billy_pilgrim', 2023, 14)
         assert (
-            list(
-                self.db.select(
-                    self.TABLENAME, where={'username': '@billy_pilgrim', 'year': 2023}
+            next(
+                iter(
+                    self.db.select(
+                        self.TABLENAME,
+                        where={'username': '@billy_pilgrim', 'year': 2023},
+                    )
                 )
-            )[0]['target']
+            )['target']
             == 14
         )
 

@@ -1,19 +1,21 @@
 import web
-from infogami.infobase.client import ClientException
-from infogami.core import forms
 
-from openlibrary.i18n import lgettext as _
-from openlibrary.utils.form import (
-    Form,
-    Textbox,
-    Password,
-    Checkbox,
-    Hidden,
-    Validator,
-    RegexpValidator,
-)
+from infogami.core import forms
+from infogami.infobase.client import ClientException
 from openlibrary import accounts
 from openlibrary.accounts import InternetArchiveAccount
+from openlibrary.i18n import lgettext as _
+from openlibrary.utils.form import (
+    Checkbox,
+    Email,
+    Form,
+    Hidden,
+    Password,
+    RegexpValidator,
+    Textbox,
+    Validator,
+)
+
 from . import spamcheck
 
 
@@ -42,7 +44,7 @@ email_not_already_used = Validator(
 )
 email_not_disposable = Validator(
     _("Disposable email not permitted"),
-    lambda email: not email.lower().endswith('dispostable.com'),
+    lambda email: not email.lower().endswith('@dispostable.com'),
 )
 email_domain_not_blocked = Validator(
     _("Your email provider is not recognized."),
@@ -54,10 +56,13 @@ username_validator = Validator(
 )
 
 vlogin = RegexpValidator(
-    r"^[A-Za-z0-9-_]{3,20}$", _('Must be between 3 and 20 letters and numbers')
+    r"^[A-Za-z0-9\-_]{3,20}$", _('Must be between 3 and 20 letters and numbers')
 )
 vpass = RegexpValidator(r".{3,20}", _('Must be between 3 and 20 characters'))
-vemail = RegexpValidator(r".*@.*", _("Must be a valid email address"))
+vemail = RegexpValidator(
+    r".*@.*\..*",
+    _("Must be a valid email address"),
+)
 
 
 class EqualToValidator(Validator):
@@ -73,11 +78,12 @@ class EqualToValidator(Validator):
 
 class RegisterForm(Form):
     INPUTS = [
-        Textbox(
+        Email(
             'email',
-            description=_('Your email address'),
+            description=_('Email'),
             klass='required',
             id='emailAddr',
+            required="true",
             validators=[
                 vemail,
                 email_not_already_used,
@@ -87,33 +93,30 @@ class RegisterForm(Form):
         ),
         Textbox(
             'username',
-            description=_(
-                "Choose a screen name. Screen names are public and cannot be changed later."
-            ),
+            description=_("Screen Name"),
             klass='required',
-            help=_("Letters and numbers only please, and at least 3 characters."),
+            help=_("Public and cannot be changed later."),
             autocapitalize="off",
             validators=[vlogin, username_validator],
+            pattern=vlogin.rexp.pattern,
+            title=vlogin.msg,
+            required="true",
         ),
         Password(
             'password',
-            description=_('Choose a password'),
+            description=_('Password'),
             klass='required',
             validators=[vpass],
-        ),
-        Password(
-            'password2',
-            description=_('Confirm password'),
-            klass='required',
-            validators=[
-                vpass,
-                EqualToValidator('password', _("Passwords didn't match.")),
-            ],
+            minlength="3",
+            maxlength="20",
+            required="true",
         ),
         Checkbox(
             'ia_newsletter',
             description=_(
-                """I want to receive news, announcements, and resources from the <a href="https://archive.org/">Internet Archive</a>, the non-profit that runs Open Library."""
+                'I want to receive news, announcements, and resources from the '
+                '<a href="https://archive.org/">Internet Archive</a>, the non-profit '
+                'that runs Open Library.'
             ),
         ),
     ]

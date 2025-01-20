@@ -1,6 +1,7 @@
 # This will be moved to core soon.
-from openlibrary.plugins.openlibrary import connection as connections
 import json
+
+from openlibrary.plugins.openlibrary import connection as connections
 
 
 class MockConnection:
@@ -86,7 +87,7 @@ class TestMigrationMiddleware:
             return json.loads(json_data)
 
         def get_many(keys):
-            data = dict(keys=json.dumps(keys))
+            data = {"keys": json.dumps(keys)}
             json_data = conn.request("openlibrary.org", "/get_many", data=data)
             return json.loads(json_data)
 

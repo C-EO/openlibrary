@@ -2,17 +2,22 @@
 
 This should go into infogami.
 """
-import web
+
 import json
+
+import web
 import yaml
 
-from infogami.utils import delegate
-from infogami.utils.view import public, render, render_template, safeint
-from infogami.utils.view import add_flash_message  # TODO: unused import?
-from infogami.utils import features
-
-from openlibrary.utils import dateutil
+from infogami.utils import delegate, features
+from infogami.utils.view import (
+    add_flash_message,  # noqa: F401 side effects may be needed
+    public,
+    render,
+    render_template,
+    safeint,
+)  # TODO: unused import?
 from openlibrary.plugins.upstream.utils import get_changes
+from openlibrary.utils import dateutil
 
 
 @public
@@ -193,5 +198,5 @@ class history(delegate.mode):
         i = web.input(page=0)
         offset = 20 * safeint(i.page)
         limit = 20
-        history = get_changes(dict(key=path, limit=limit, offset=offset))
+        history = get_changes({"key": path, "limit": limit, "offset": offset})
         return render.history(page, history)

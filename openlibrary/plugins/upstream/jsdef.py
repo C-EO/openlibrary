@@ -57,10 +57,6 @@ import json
 
 import web
 from web.template import (
-    Template,
-    Parser,
-    LineNode,
-    SuiteNode,
     DefNode,
     PythonTokenizer,
     # INDENT,
@@ -229,7 +225,7 @@ def py2js(expr):
     >>> py2js("x or not y")
     'x || ! y'
     """
-    d = {"and": "&&", "or": "||", "not": "!"}
+    d = {"and": "&&", "or": "||", "not": "!", "None": "null"}
 
     def f(tokens):
         for t in tokens:

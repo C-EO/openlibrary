@@ -3,11 +3,11 @@
 # Create a dump of all Open Library records, and generate sitemaps
 #
 # To run in local environment:
-#     docker-compose exec web scripts/oldump.sh $(date +%Y-%m-%d)
+#     docker compose exec web scripts/oldump.sh $(date +%Y-%m-%d)
 # Will create files in the OL root at dumps/ , including edits up to today.
 #
 # Call flow:
-# docker-compose.production.yml defines `cron-jobs` Docker container.
+# compose.production.yaml defines `cron-jobs` Docker container.
 # --> docker/ol-cron-start.sh sets up the cron tasks.
 #     --> olsystem: /etc/cron.d/openlibrary.ol_home0 defines the actual job
 #         --> scripts/oldump.sh
@@ -113,8 +113,19 @@ then
       log "Skipping: $(compgen -G "ol_dump_reading-log_$yyyymm*.txt.gz")"
   fi
 
-
   log "=== Step 2 ==="
+  #generate cover metadata dumps
+  if [[ ! -f $(compgen -G "ol_dump_covers_metadata_$yyyymm*.txt.gz") ]]
+  then
+      log "generating coverstore dump: ol_dump_covers_metadata_$yyyymmdd.txt.gz"
+      # Note: this throws a psql warning since a db is already specified in PSQL_PARAMS, but the
+      # -d param takes precedence like we want it to!
+      time psql $PSQL_PARAMS -d coverstore --set=upto="$yyyymmdd" -f $SCRIPTS/dump-covers-metadata.sql | gzip -c > ol_dump_covers_metadata_$yyyymmdd.txt.gz
+  else
+      log "Skipping: $(compgen -G "ol_dump_covers_metadata_$yyyymmdd*.txt.gz")"
+  fi
+
+  log "=== Step 3 ==="
   if [[ ! -f $(compgen -G "ol_dump_ratings_$yyyymm*.txt.gz") ]]
   then
       log "generating ratings table: ol_dump_ratings_$yyyymmdd.txt.gz"
@@ -124,7 +135,7 @@ then
   fi
 
 
-  log "=== Step 3 ==="
+  log "=== Step 4 ==="
   if [[ ! -f "data.txt.gz" ]]
   then
       log "generating the data table: data.txt.gz -- takes approx. 110 minutes..."
@@ -138,7 +149,7 @@ then
   fi
 
 
-  log "=== Step 4 ==="
+  log "=== Step 5 ==="
   if [[ ! -f $(compgen -G "ol_cdump_$yyyymm*.txt.gz") ]]
   then
       # generate cdump, sort and generate dump
@@ -151,7 +162,7 @@ then
   fi
 
 
-  log "=== Step 5 ==="
+  log "=== Step 6 ==="
   if [[ ! -f $(compgen -G "ol_dump_*.txt.gz") ]]
   then
       log "generating the dump -- takes approx. 485 minutes for 173,000,000+ records..."
@@ -162,7 +173,7 @@ then
   fi
 
 
-  log "=== Step 6 ==="
+  log "=== Step 7 ==="
   if [[ ! -f $(compgen -G "ol_dump_*_$yyyymm*.txt.gz") ]]
   then
       mkdir -p $TMPDIR/oldumpsort
@@ -204,9 +215,10 @@ if [[ ! -d $TMPDIR/sitemaps ]]
 then
     log "generating sitemaps"
     mkdir -p $TMPDIR/sitemaps
+    rm -fr $TMPDIR/sitemaps/*
     cd $TMPDIR/sitemaps
     time python $SCRIPTS/sitemaps/sitemap.py $TMPDIR/dumps/$dump/$dump.txt.gz > sitemaps.log
-    rm -fr $TMPDIR/sitemaps
+    # rm -fr $TMPDIR/sitemaps
     ls -lh
 else
     log "Skipping sitemaps"

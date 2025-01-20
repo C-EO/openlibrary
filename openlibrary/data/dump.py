@@ -45,8 +45,14 @@ def print_dump(json_records, filter=None):
 
         key = web.safestr(d["key"])
 
-        # skip user and admin pages
-        if key.startswith(("/people/", "/admin/")):
+        # skip user pages
+        if key.startswith("/people/") and not re.match(
+            r"^/people/[^/]+/lists/OL\d+L$", key
+        ):
+            continue
+
+        # skip admin pages
+        if key.startswith("/admin/"):
             continue
 
         # skip obsolete pages. Obsolete pages include volumes, scan_records and users
@@ -84,7 +90,10 @@ def read_data_file(filename: str, max_lines: int = 0):
 
 def xopen(path: str, mode: str):
     if path.endswith(".gz"):
-        return gzip.open(path, mode)
+        with gzip.open(
+            path, mode
+        ) as file:  # need to add no QA when the rule is enabled
+            return file
     else:
         return open(path, mode)
 
@@ -110,7 +119,6 @@ def generate_cdump(data_file, date=None):
     """Generates cdump from a copy of data table.  If date is specified, only revisions
     created on or before that date will be considered.
     """
-    logger.error(f"generate_cdump({data_file}, {date}) reading")
     # adding Z to the date will make sure all the timestamps are less than that date.
     #
     #   >>> "2010-05-17T10:20:30" < "2010-05-17"
@@ -120,6 +128,7 @@ def generate_cdump(data_file, date=None):
     #
     # If scripts/oldump.sh has exported $OLDUMP_TESTING then save a lot of time by only
     # processing a subset of the lines in data_file.
+    log(f"generate_cdump({data_file}, {date}) reading")
     max_lines = 1_000_000 if os.getenv("OLDUMP_TESTING") else 0  # 0 means unlimited.
     filter = date and (lambda doc: doc["last_modified"]["value"] < date + "Z")
     print_dump(read_data_file(data_file, max_lines), filter=filter)
@@ -190,12 +199,12 @@ def generate_idump(day, **db_parameters):
     db.setup_database(**db_parameters)
     rows = db.longquery(
         "SELECT data.* FROM data, version, transaction "
-        + " WHERE data.thing_id=version.thing_id"
-        + "     AND data.revision=version.revision"
-        + "     AND version.transaction_id=transaction.id"
-        + "     AND transaction.created >= $day"
-        + "     AND transaction.created < date $day + interval '1 day'"
-        + " ORDER BY transaction.created",
+        " WHERE data.thing_id=version.thing_id"
+        "     AND data.revision=version.revision"
+        "     AND version.transaction_id=transaction.id"
+        "     AND transaction.created >= $day"
+        "     AND transaction.created < date $day + interval '1 day'"
+        " ORDER BY transaction.created",
         vars=locals(),
         chunk_size=10_000,
     )
@@ -203,11 +212,20 @@ def generate_idump(day, **db_parameters):
 
 
 def split_dump(dump_file=None, format="oldump_%s.txt"):
-    """Split dump into authors, editions and works."""
+    """Split dump into authors, editions, works, redirects, and other."""
     log(f"split_dump({dump_file}, format={format})")
     start_time = datetime.now()
-    types = ("/type/edition", "/type/author", "/type/work", "/type/redirect")
+    types = (
+        "/type/edition",
+        "/type/author",
+        "/type/work",
+        "/type/redirect",
+        "/type/delete",
+        "/type/list",
+    )
     files = {}
+    files['other'] = xopen(format % 'other', 'wt')
+
     for t in types:
         tname = t.split("/")[-1] + "s"
         files[t] = xopen(format % tname, "wt")
@@ -219,6 +237,8 @@ def split_dump(dump_file=None, format="oldump_%s.txt"):
         type, rest = line.split("\t", 1)
         if type in files:
             files[type].write(line)
+        else:
+            files['other'].write(line)
 
     for f in files.values():
         f.close()
@@ -236,7 +256,7 @@ def make_index(dump_file):
         if type in ("/type/edition", "/type/work"):
             title = data.get("title", "untitled")
             path = key + "/" + urlsafe(title)
-        elif type == "/type/author":
+        elif type in ("/type/author", "/type/list"):
             title = data.get("name", "unnamed")
             path = key + "/" + urlsafe(title)
         else:
@@ -341,8 +361,8 @@ def main(cmd, args):
     if func:
         func(*args, **kwargs)
     else:
-        logger.error(f"Unknown command: {cmd}")
         log(f"Unknown command: {cmd}")
+        logger.error(f"Unknown command: {cmd}")
 
 
 if __name__ == "__main__":

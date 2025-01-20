@@ -8,7 +8,7 @@
     </thead>
     <tbody>
       <MergeRow
-        v-for="record in records"
+        v-for="record in enhancedRecords"
         :key="record.key"
         :record="record"
         :fields="fields"
@@ -44,12 +44,10 @@
 <script>
 /* eslint no-console: 0 */
 import _ from 'lodash';
-import Vue from 'vue';
-import AsyncComputed from 'vue-async-computed';
 import MergeRow from './MergeRow.vue';
-import { merge, get_editions, get_lists, get_bookshelves, get_ratings } from './utils.js';
+import { merge, get_editions, get_lists, get_bookshelves, get_ratings, get_author_names } from './utils.js';
+import CONFIGS from '../configs.js';
 
-Vue.use(AsyncComputed);
 
 /**
  * @param {string} olid
@@ -60,10 +58,15 @@ function fetchRecord(olid) {
         M: 'books',
         A: 'authors'
     }[olid[olid.length - 1]];
+    let base = '';
+    if (CONFIGS.OL_BASE_BOOKS) {
+        base = CONFIGS.OL_BASE_BOOKS;
+    } else {
+        // FIXME Fetch from prod openlibrary.org, otherwise it's outdated
+        base = location.host.endsWith('.openlibrary.org') ? 'https://openlibrary.org' : '';
+    }
     const record_key = `/${type}/${olid}`;
-    // FIXME Fetch from prod openlibrary.org, otherwise it's outdated
-    const url = location.host.endsWith('.openlibrary.org') ? `https://openlibrary.org${record_key}.json` : `${record_key}.json`;
-    return fetch(url).then(r => {
+    return fetch(`${base}${record_key}.json`).then(r => {
         return (r.ok) ? r.json() : {key: record_key, type: {key: '/type/none'}, error: r.statusText};
     });
 }
@@ -107,6 +110,28 @@ export default {
             return records;
         },
 
+        /** The records, with extra helpful metadata attached for display. Should NOT be saved to Open Library */
+        async enhancedRecords(){
+            if (!this.records) return null;
+
+            let author_names;
+
+            try {
+                author_names = await get_author_names(this.records);
+            } catch (error) {
+                console.error('Error creating enhancedRecords:', error);
+            }
+
+            const enhanced_records = _.cloneDeep(this.records)
+
+            for (const record of enhanced_records) {
+                for (const entry of (record.authors || [])) {
+                    entry.name = author_names[entry.author.key.slice('/authors/'.length)];
+                }
+            }
+            return enhanced_records
+        },
+
         async editions() {
             if (!this.records) return null;
 
@@ -146,7 +171,7 @@ export default {
             );
             const responses = promises.map(p => p.value || p);
             return _.fromPairs(
-                this.records.map((work, i) => [work.key, responses[i].counts])
+                this.records.map((work, i) => [work.key, responses[i]])
             );
         },
 
@@ -163,7 +188,7 @@ export default {
         },
 
         async merge() {
-            if (!this.master_key || !this.records || !this.editions || !this.lists || !this.bookshelves)
+            if (!this.master_key || !this.records || !this.editions)
                 return undefined;
 
             const master = this.records.find(r => r.key === this.master_key);
@@ -181,7 +206,7 @@ export default {
 
             const extras = {
                 edition_count: _.sum(records.map(r => this.editions[r.key].size)),
-                list_count: _.sum(records.map(r => this.lists[r.key].size))
+                list_count: (this.lists) ? _.sum(records.map(r => this.lists[r.key].size)) : null
             };
 
             const unmergeable_works = this.records
@@ -345,11 +370,14 @@ table.main {
       }
 
       & > div.wrap-key--title--subtitle--authors--error {
-        min-width: max-content;
+        min-width: 500px;
         padding: 0 0 calc(@row-padding * 2) 0;
 
         & > div {
           padding: @row-padding @row-padding 0 @row-padding;
+          white-space: normal;
+          word-wrap: break-word;
+          overflow-wrap: break-word;
           &:last-child {
             padding-bottom: @row-padding;
           }
@@ -395,7 +423,7 @@ table.main {
     & > td.col-key--title--subtitle--authors--error,
     & > .col-subjects--subject_people--subject_places--subject_times,
     & > td.col-editions  {
-      max-width: max-content;
+      max-width: 100vw;
     }
   }
 
@@ -465,6 +493,10 @@ li.excerpt-item {
 }
 
 .field-authors {
+  td.author-author {
+    padding-right: 6px;
+  }
+
   thead, td.author-index, td.author-type {
     display: none;
   }

@@ -20,7 +20,7 @@ $if formdata:
         <div class="note">$_("Please select some authors to merge.")</div>
 
 <ol class="sansserif">
-    <li>$_('Select a "primary" record that best represents the author -')
+    <li>$_('Select the oldest profile as primary -')
         <input type="radio" name="radio" id="radio" checked="checked"/>
     </li>
     <li>$_('Select author records which should be merged with the primary')
@@ -70,23 +70,36 @@ $if can_merge:
                     <input type="checkbox" value="$k" name="merge_key" id="$k" $cond(formdata and k in formdata.selected, 'checked="checked"', '')/>
                 </div>
                 <div class="data record">
+                    <span class="ol-num"> ${k} </span>
                     <label for="$k">
                         <span class="name">$a.name</span>
                         $if a.birth_date or a.death_date:
-                            <span class="metaDate" title="birth/death date">$a.get('birth_date', '') - $a.get('death_date', '')</span>
+                            <span class="metaDate" title="$_('birth/death date')">$a.get('birth_date', '') - $a.get('death_date', '')</span>
                         $elif a.date:
                             <span class="metaDate">$a.date</span>
+                        $if a.remote_ids:
+                            <div>
+                            $ configured_ids = get_identifier_config('author')['identifiers']
+                            $for id in configured_ids:
+                                $if id.name in a.remote_ids:
+                                    $ href = id.url.replace('@@@', a.remote_ids[id.name])
+                                    <small>$id.label:<a href="$href">$a.remote_ids[id.name]</a></small>
+                            </div>
                     </label>
+                    $if a.bio:
+                        <p>${ macros.TruncateString(a.bio, 250) }</p>
+                    $else:
+                        <p>No description.</p>
                     <ul>
                     $for doc in top.docs:
-                        <li><a href="$doc['key']'" target="new" title="$_('Open in a new window')">$doc['title']</a> <span class="smaller">$ungettext('1 edition', '%(count)d editions', doc['edition_count'], count=doc['edition_count']),
+                        <li><a href="$doc['key']" target="new" title="$_('Open in a new window')">$doc['title']</a> <span class="smaller">$ungettext('%(count)s edition', '%(count)s editions', doc['edition_count'], count=doc['edition_count']),
                         $if doc.get('first_publish_year'):
                             <span title="$_('First published in')">$doc['first_publish_year']</span>
                         </span></li>
                     </ul>
                 </div>
                 <div class="data count">
-                    <a href="/authors/$k" target="new" title="$_('Visit this author\'s page in a new window')">$ungettext("1 work", "%(count)d works", top.num_found, count=top.num_found)</a>
+                    <a href="/authors/$k" target="new" title="$_('Visit this author\'s page in a new window')">$ungettext("%(count)d work", "%(count)d works", top.num_found, count=top.num_found)</a>
                 </div>
             </div>
     </div>
@@ -102,7 +115,7 @@ $if can_merge:
             $if mrid:
                 <button id="reject-author-merge-btn" type="button" class="larger merge-feedback__reject">$_('Reject Merge')</button>
             $else:
-                <a href="javascript:history.go(-1);" class="small red sansserif">$_('Cancel')</a>
+                <a href="javascript:;" class="small red sansserif go-back-link">$_('Cancel')</a>
     </div>
 </div>
 

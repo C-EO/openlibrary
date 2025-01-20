@@ -1,20 +1,22 @@
 """Loan Stats"""
 
 import web
-from infogami.utils import delegate
-from ..core.lending import get_availabilities
 
+from infogami.utils import delegate
 from infogami.utils.view import public
 
-from ..utils import dateutil
 from .. import app
 from ..core import cache
-from ..core.observations import Observations
 from ..core.booknotes import Booknotes
 from ..core.bookshelves import Bookshelves
+from ..core.follows import PubSub
+from ..core.lending import get_availabilities
+from ..core.observations import Observations
 from ..core.ratings import Ratings
+from ..core.yearly_reading_goals import YearlyReadingGoals
 from ..plugins.admin.code import get_counts
 from ..plugins.worksearch.code import get_solr_works
+from ..utils import dateutil
 
 LENDING_TYPES = '(libraries|regions|countries|collections|subjects|format)'
 
@@ -35,9 +37,11 @@ def reading_log_summary():
         delegate.fakeload()
 
     stats = Bookshelves.summary()
+    stats.update(YearlyReadingGoals.summary())
     stats.update(Ratings.summary())
     stats.update(Observations.summary())
     stats.update(Booknotes.summary())
+    stats.update(PubSub.summary())
     return stats
 
 

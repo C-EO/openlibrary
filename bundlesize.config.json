@@ -10,15 +10,15 @@
     },
     {
       "path": "static/build/markdown-editor.*.js",
-      "maxSize": "11KB"
+      "maxSize": "13KB"
     },
     {
       "path": "static/build/carousel.*.js",
-      "maxSize": "1KB"
+      "maxSize": "6KB"
     },
     {
       "path": "static/build/carousels-partials.*.js",
-      "maxSize": "1KB"
+      "maxSize": "6KB"
     },
     {
       "path": "static/build/covers.*.js",
@@ -30,23 +30,19 @@
     },
     {
       "path": "static/build/readmore.*.js",
-      "maxSize": "2KB"
+      "maxSize": "3KB"
     },
     {
       "path": "static/build/modal-links.*.js",
-      "maxSize": "5.6KB"
+      "maxSize": "7KB"
     },
     {
       "path": "static/build/user-website.*.js",
-      "maxSize": "4KB"
+      "maxSize": "7KB"
     },
     {
-      "path": "static/build/page-barcodescanner.*.js",
-      "maxSize": "30KB"
-    },
-    {
-      "path": "static/build/realtime-account-validation.*.js",
-      "maxSize": "1KB"
+      "path": "static/build/signup.*.js",
+      "maxSize": "2KB"
     },
     {
       "path": "static/build/readinglog-stats.*.js",
@@ -62,27 +58,24 @@
     },
     {
       "path": "static/build/search.*.js",
-      "maxSize": "1KB"
+      "maxSize": "1.2KB"
     },
     {
       "path": "static/build/tabs.*.js",
       "maxSize": "5KB"
     },
     {
-      "path": "static/build/lists.*.js",
-      "maxSize": "5KB"
-    },
-    {
       "path": "static/build/all.js",
-      "maxSize": "122KB"
+      "maxSize": "130KB"
     },
     {
       "path": "static/build/page-admin.css",
-      "maxSize": "24KB"
+      "maxSize": "26KB"
+
     },
     {
       "path": "static/build/page-book.css",
-      "maxSize": "13KB"
+      "maxSize": "14KB"
     },
     {
       "path": "static/build/page-edit.css",
@@ -98,7 +91,7 @@
     },
     {
       "path": "static/build/page-plain.css",
-      "maxSize": "24KB"
+      "maxSize": "25KB"
     },
     {
       "path": "static/build/page-subject.css",
@@ -106,7 +99,7 @@
     },
     {
       "path": "static/build/page-user.css",
-      "maxSize": "25KB"
+      "maxSize": "30KB"
     }
   ]
 }

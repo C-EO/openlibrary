@@ -1,6 +1,6 @@
 $def with (page, edition=None)
 
-$ is_privileged_user = ctx.user and (ctx.user.is_admin() or ctx.user.is_usergroup_member('/usergroup/super-librarians'))
+$ is_privileged_user = ctx.user and (ctx.user.is_admin() or ctx.user.is_super_librarian())
 $ is_librarian = ctx.user and ctx.user.is_librarian()
 
 $ component_times = {}
@@ -18,6 +18,13 @@ $elif page.works:
 $else:
   $ work = page.make_work_from_orphaned_edition()
   $ show_observations = False
+
+$# This can happen when looking at past versions of an edition who's work
+$# has since been merged.
+$if work.type.key == '/type/redirect':
+  $ redir = work
+  $ work = get_document(redir.key)
+  $ work['title'] = '↪ ' + redir.key
 
 $ edition = storage({})
 $if query_param('edition', '').startswith('key:'):
@@ -80,7 +87,9 @@ $ ocaid = edition.get('ocaid')
 $ book_title = edition.get('title', '') or (work.title if work else '')
 $ work_title = work.title if work else edition.get('title', '')
 $ book_subtitle = edition.get('subtitle', '')
-$ title_suffix = cond(edition.get('publish_date'), u"({0} edition)".format(edition.get('publish_date')), "(edition)")
+$ authors = work.get_authors() if work else edition.get_authors()
+$# Only display the first / primary author
+$ title_suffix = "by " + authors[0].name if authors else ""
 $ title = book_title + " " + title_suffix
 $ title_with_site = _("%(page_title)s | Open Library", page_title=title)
 $ meta_cover_url = item_image((edition or work).get_cover_url("L"), default="https://openlibrary.org/images/icons/avatar_book-sm.png")
@@ -135,7 +144,7 @@ $def display_identifiers(label, ids, itemprop=None):
         $if (True in all_ids) and (1==len(all_ids)):
             $return
 
-        <!-- FIXME: Identifier names need to be translated (I18N) -->
+        $# FIXME: Identifier names need to be translated (I18N)
         <dt>$label</dt>
         <dd class="object" $:cond(itemprop, 'itemprop="%s"' % itemprop, '')>
             $for id in ids:
@@ -162,34 +171,56 @@ $if is_privileged_user:
 
 $ component_times['ReadlogStats'] = time()
 $ star_ratings_stats = macros.StarRatingsStats(work)
+$ star_ratings_stats_mobile = macros.StarRatingsStats(work, mobile=True)
 $ component_times['ReadlogStats'] = time() - component_times['ReadlogStats']
 
-$ render_summary= render_template("type/edition/title_summary", work, edition, ocaid, work_title, star_ratings_stats)
+$ component_times['get_observation_metrics'] = time()
+$ reader_observations = get_observation_metrics(work['key']) if show_observations else {}
+$ component_times['get_observation_metrics'] = time() - component_times['get_observation_metrics']
+
+$ component_times['affiliate_links component'] = time()
+$ prices = edition.key.startswith('/books/')
+
+$ oclc_numbers = (edition.oclc_numbers and edition.oclc_numbers[0]) or ""
+$ isbn_13 = edition.get_isbn13() or None
+$ isbn_10 = edition.get_isbn10() or None
+
+$ asin = None
+$if edition.get('identifiers'):
+    $if edition.identifiers.get('amazon'):
+        $ asin = edition.identifiers.amazon[0]
+
+$if isbn_10 and not asin:
+    $ asin = isbn_10
+
+$ affiliate_links = macros.AffiliateLinks(edition.title, {'isbn': isbn_13, 'asin': asin, 'prices': prices}, async_load=True)
+$ component_times['affiliate_links component'] = time() - component_times['affiliate_links component']
+
+$ worldcat_links = macros.WorldcatLink(isbn=isbn_13 or isbn_10, oclc_numbers=oclc_numbers, referer=page.url(relative=False))
 
 <div id="contentBody" role="main" itemscope itemtype="https://schema.org/Book">
   <div class="workDetails">
     $if work and work.key:
         <link itemprop="exampleOfWork" href="$work.key">
 
+    <!-- (mobile only) -->
+    $:macros.EditionNavBar(reader_observations, work.edition_count, show_observations)
+    <a id="overview-mobile" name="overview-mobile" class="section-anchor section-anchor--no-height"></a>
+    $:render_template("type/edition/title_and_author", page, work, edition, ocaid, work_title, star_ratings_stats_mobile, for_desktop=False)
     <div class="editionCover">
-      $ share_url = request.home + (edition or work).key
-
-      $ component_times['databarWork: Modal Links'] = time()
-      $ modal_links = render_template("type/edition/modal_links", work, edition, share_url)
-      $ component_times['databarWork: Modal Links'] = time() - component_times['databarWork: Modal Links']
-
-      $:macros.databarWork(edition or work, editions_page=True, render_times=component_times,summary=render_summary, modal_links=modal_links)
+      $:macros.databarWork(edition or work, worldcat_links, affiliate_links, editions_page=True, render_times=component_times)
     </div>
 
     <div class="editionAbout">
+      $:macros.EditionNavBar(reader_observations, work.edition_count, show_observations, desktop_only=True)
       <div class="editionAll">
         $ component_times['EditTopbar'] = time()
         $:macros.databarView(page, edition)
         $ component_times['EditTopbar'] = time() - component_times['EditTopbar']
       </div>
-    <!--This section appears only in desktop-->
-    <div class="desktop-book-header">
-      $:render_summary
+      <a id="overview" name="overview" class="section-anchor section-anchor--no-height"></a>
+      <!-- (desktop only) -->
+      $:render_template("type/edition/title_and_author", page, work, edition, ocaid, work_title, star_ratings_stats, for_desktop=True)
 
       $if page.type.key in ["/type/work", "/type/edition", "/type/author"]:
         $if edition and page.type.key in ["/type/work"]:
@@ -198,13 +229,31 @@ $ render_summary= render_template("type/edition/title_summary", work, edition, o
           $ edit_url = page.url(suffix="/edit")
       $else:
         $ edit_url = page.key + "?m=edit"
-    </div>
+
       $:render_template("type/edition/compact_title", book_title, edit_url)
-      $ component_times['get_observation_metrics'] = time()
-      $ reader_observations = get_observation_metrics(work['key']) if show_observations else {}
-      $ component_times['get_observation_metrics'] = time() - component_times['get_observation_metrics']
-      $:macros.EditionNavBar(reader_observations, work.edition_count, show_observations)
-      <a id="edition-overview" name="edition-overview"></a>
+
+      $if work and work.description or edition and edition.description:
+        $if edition and edition.description:
+          $ overview_desc = edition.description
+        $else:
+          $ overview_desc = work.description
+        <div class="book-description read-more">
+            <div class="read-more__content" style="max-height:81px">
+                $:sanitize(format(overview_desc))
+            </div>
+            $:macros.ReadMore()
+        </div>
+      $elif edition:
+        <div class="book-description">
+            <div class="book-description-content">
+                <p class="workHelp">
+                    $if page_type=="works":
+                      $:_("This work doesn't have a description yet. Can you <b><a href='%(url)s'>add one</a></b>?", url=edition.url('/edit')+"#about/about")
+                    $else:
+                      $:_("This edition doesn't have a description yet. Can you <b><a href='%(url)s'>add one</a></b>?", url=edition.url('/edit')+"#edition/description")
+                </p>
+            </div>
+        </div>
       <div>
         $if edition:
           <div class="edition-omniline">
@@ -243,7 +292,7 @@ $ render_summary= render_template("type/edition/title_summary", work, edition, o
             $if is_librarian:
               $if ocaid:
                 <div class="edition-omniline-item">
-                 <div>Internet Archive</div>
+                 <div>$_("Internet Archive")</div>
                   <span><a href="https://archive.org/details/$ocaid">$ocaid</a></span>
                 </div>
 
@@ -255,34 +304,21 @@ $ render_summary= render_template("type/edition/title_summary", work, edition, o
                     $isbns.append(value['value'])
               $if isbns:
                 <div class="edition-omniline-item">
-                  <div>ISBNs</div>
+                  <div>$_("ISBNs")</div>
                   $for isbn in isbns:
                     <span>$isbn</span>
                 </div>
           </div>
       </div>
 
-      $ prices = page.key.startswith('/books/')
-
-      $ oclc_numbers = (page.oclc_numbers and page.oclc_numbers[0]) or ""
-      $ isbn_13 = page.get_isbn13()
-      $ isbn_10 = page.get_isbn10()
-
-      $ asin = None
-      $if page.get('identifiers'):
-          $if page.identifiers.get('amazon'):
-              $ asin = page.identifiers.amazon[0]
-
-      $if isbn_10 and not asin:
-          $ asin = isbn_10
       <div class="Tools">
         <div class="panel mobile-vendor">
           <div class="btn-notice">
-            $:macros.WorldcatLink(isbn=isbn_13 or isbn_10, oclc_numbers=oclc_numbers, referer=page.url(relative=False))
+            $:worldcat_links
 
             <div class="cta-section">
               <p class="cta-section-title">$_('Buy this book')</p>
-              $:macros.AffiliateLinks(page, {'isbn': isbn_13, 'asin': asin, 'prices': prices})
+              $:affiliate_links
             </div>
           </div>
         </div>
@@ -297,26 +333,6 @@ $ render_summary= render_template("type/edition/title_summary", work, edition, o
               $ seen.add(e.languages[0].name)
               <a href="$work.key?edition=$(e.ocaid)">$get_language_name(e.languages[0].key)</a>
         </p>
-
-      $if work and work.description or edition and edition.description:
-        $if edition and edition.description:
-          $ overview_desc = edition.description
-        $else:
-          $ overview_desc = work.description
-        <div class="book-description">
-            <div class="book-description-content restricted-view">
-                $:sanitize(format(overview_desc))
-            </div>
-            $:macros.ReadMore("book-description")
-        </div>
-      $elif edition:
-        <div class="book-description">
-            <div class="book-description-content">
-                <p class="workHelp">
-                    $:_("This edition doesn't have a description yet. Can you <b><a href='%(url)s'>add one</a></b>?", url=edition.url('/edit')+"#about/about")
-                </p>
-            </div>
-        </div>
 
     <div class="subjects">
       <div class="subjects-content">
@@ -338,31 +354,31 @@ $ render_summary= render_template("type/edition/title_summary", work, edition, o
         $if edition:
           <h2 class="details-title" itemprop="name">$_("Book Details")</h2>
           <hr>
-          $if edition.publish_places:
-            <div class="section">
-              <h3 class="edition-header">$_('Published in')</h3>
-              <p>
-              $for p in edition.publish_places:
-                $(p)$cond(loop.last, "", ", ")
-              </p>
-            </div>
           $if edition.first_sentence:
             <div>
-            <h3 class="edition-header">$_("First Sentence")</h3>
-            <p>"$(edition.first_sentence)"</p>
+              <h3>$_("First Sentence")</h3>
+              <p>"$(edition.first_sentence)"</p>
             </div>
 
-          $ component_times['TableOfContents'] = time()
-          $:macros.TableOfContents(edition, ocaid)
-          $ component_times['TableOfContents'] = time() - component_times['TableOfContents']
+          $ table_of_contents = edition.get_table_of_contents()
+          $if table_of_contents and len(table_of_contents.entries) > 1:
+            <div class="section read-more">
+              <h3>$_("Table of Contents")</h3>
+              $ component_times['TableOfContents'] = time()
+              $:macros.TableOfContents(table_of_contents, ocaid, cls='read-more__content', attrs='style="max-height:350px"')
+              $ component_times['TableOfContents'] = time() - component_times['TableOfContents']
+              $:macros.ReadMore()
+            </div>
 
-          $if edition.notes or edition.series or edition.volume or edition.genres or edition.other_titles or edition.copyright_date or edition.translation_of or edition.translated_from:
+          $if edition.notes or edition.publish_places or edition.series or edition.volume or edition.genres or edition.other_titles or edition.copyright_date or edition.translation_of or edition.translated_from:
             <div class="section">
-                <h3 class="edition-header">$_("Edition Notes")
-                </h3>
+                <h3>$_("Edition Notes")</h3>
                 $if edition.notes:
+                    <div class="edition-notes">
                     $:format(edition.notes)
+                    </div>
                 <dl class="meta">
+                    $:display_value(_("Published in"), edition.publish_places)
                     $:display_value(_("Series"), edition.series)
                     $:display_value(_("Volume"), edition.volume)
                     $:display_value(_("Genre"), edition.genres)
@@ -376,7 +392,7 @@ $ render_summary= render_template("type/edition/title_summary", work, edition, o
           $ classifications = edition.get_classifications().multi_items()
           $if classifications:
             <div class="section">
-                <h3 class="list-header collapse">$_("Classifications")</h3>
+                <h3>$_("Classifications")</h3>
                 <dl class="meta">
                     $for name, values in classifications:
                         $:display_identifiers(values[0].label, values)
@@ -401,7 +417,7 @@ $ render_summary= render_template("type/edition/title_summary", work, edition, o
           $ contributors = edition.get('contributors', [])
           $if contributors:
             <div class="section">
-              <h3 class="edition-header">$_("Contributors")</h3>
+              <h3>$_("Contributors")</h3>
               <dl class="meta">
               $for c in contributors:
                     $:display_value(c.role, c.name)
@@ -410,7 +426,7 @@ $ render_summary= render_template("type/edition/title_summary", work, edition, o
 
           $if has_any("physical_format", "pagination", "physical_dimensions", "weight"):
             <div class="section">
-                <h3 class="list-header collapse">$_("The Physical Object")</h3>
+                <h3>$_("The Physical Object")</h3>
                 <dl class="meta">
                     $:display_value(_("Format"), edition.physical_format)
                     $:display_value(_("Pagination"), edition.pagination)
@@ -422,7 +438,7 @@ $ render_summary= render_template("type/edition/title_summary", work, edition, o
 
 
           <div class="section">
-            <h3 class="list-header collapse">$_("ID Numbers")</h3>
+            <h3>$_("Edition Identifiers")</h3>
             <dl class="meta">
                 $:display_identifiers("Open Library", [storage(url=None, value=edition.key.split("/")[-1])])
                 $ no_index = edition.get_ia_meta_fields().get('noindex', False)
@@ -435,7 +451,21 @@ $ render_summary= render_template("type/edition/title_summary", work, edition, o
             $for name, values in edition.get_identifiers().multi_items():
                 $:display_goodreads(values[0].label, values)
             </dl>
+            <h3>$_("Work Identifiers")</h3>
+            <dl class="meta">
+                $:display_identifiers("Work ID", [storage(url=None, value=work.key.split("/")[-1])])
+                $for name, values in work.get_identifiers().multi_items():
+                    $ identifier_label = values[0].label
+                    $:display_identifiers(identifier_label, values)
+            </dl>
           </div>
+	  $ source_records = edition.get('source_records')
+          $if source_records:
+              <div class="section">
+              <h3>$_("Source records")</h3>
+              $ get_source_html = render_template("history/sources").get_source_html
+              $:'<br/>'.join([get_source_html(s) for s in source_records])
+              </div>
           $if work:
             $if not work.excerpts and work.first_sentence:
               <h4>$_("First Sentence")</h4>
@@ -443,16 +473,16 @@ $ render_summary= render_template("type/edition/title_summary", work, edition, o
 
             $if work.description and work.description != overview_desc:
               <h4>$_("Work Description")</h4>
-              <div class="work-description">
-                <div class="work-description-content restricted-view">
+              <div class="work-description read-more">
+                <div class="read-more__content" style="max-height:81px">
                   $:sanitize(format(work.description))
                 </div>
-                $:macros.ReadMore('work-description')
+                $:macros.ReadMore()
               </div>
 
             $if work.original_languages:
               <div class="sansserif smallest">$_("Original languages")</div>
-              <!-- TODO: Double check that these language names are localized -->
+              $# TODO: Double check that these language names are localized
               $', '.join(lang.name for lang in work.original_languages)<p>
 
             $if work.excerpts:
@@ -473,7 +503,7 @@ $ render_summary= render_template("type/edition/title_summary", work, edition, o
                       $else:
                         $_("added anonymously.")
                       $if excerpt.comment:
-                        "<em>$excerpt.comment</em>"
+                        $:format(excerpt.comment)
                     </div>
                   </div>
               </div>
@@ -494,41 +524,41 @@ $ render_summary= render_template("type/edition/title_summary", work, edition, o
         $ component_times['Review component'] = time()
         $:render_template("observations/review_component", work, reader_observations, page.key)
         $ component_times['Review component'] = time() - component_times['Review component']
-      <a id="lists-section" name="lists-section tab-section" class="section-anchor"></a>
+      <a id="lists-section" class="section-anchor"></a>
       <div class="workFooter tab-section">
         $# pages like /books/ia:foo00bar are fake records created from metadata API.
         $# Adding them to lists doesn't work. Disabling it to avoid any issues.
         $if "lists" in ctx.features and not page.is_fake_record():
-          <h2 class="list-heading"><a href="$page.url()/lists">$_('Lists containing this Book')</a></h2>
+          <div class="lists-heading">
+            <h2 class="lists-title">$_('Lists')</h2>
+            $ has_lists = False
+            $if (work and work.get_lists()) or (edition and edition.get_lists()):
+              $ has_lists = True
+            $if has_lists:
+              <a href="$page.url()/lists">$_('See All')</a>
+          </div>
           <div class="user-book-options">
             <div class="Tools tools-override">
-              $if work:
+              $if work and work.key:
                 $ component_times['lists widget: WorkListTime'] = time()
                 $:render_template("lists/widget", work, include_header=False, include_widget=False)
                 $ component_times['lists widget: WorkListTime'] = time() - component_times['lists widget: WorkListTime']
-
               $if edition and is_editionless_work:
                 $ component_times['lists widget: EditionListTime'] = time()
                 $:render_template("lists/widget", edition, include_header=False, include_widget=False)
                 $ component_times['lists widget: EditionListTime'] = time() - component_times['lists widget: EditionListTime']
+              $if not has_lists:
+                $_('This work does not appear on any lists.')
             </div>
           </div>
       </div>
+      <a id="related-work-carousel" class="section-anchor"></a>
     </div>
   </div>
 
   $ component_times['RelatedWorksCarousel'] = time()
-  <a id="related-work-carousel" name="related-work-carousel tab-section" class="section-anchor"></a>
   <div class="RelatedWorksCarousel" data-workid="$work.key.split('/')[-1]">
-    <div class="hidden loadingIndicator">
-        <figure>
-        <img src="/images/ajax-loader-bar.gif" alt="Loading indicator">
-        <figcaption style="
-            justify-content: center;
-            display: flex;
-        ">Loading Related Books</figcaption>
-        </figure>
-    </div>
+    $:macros.LoadingIndicator(_("Loading Related Books"), "carousel-loading")
   </div>
   $ component_times['RelatedWorksCarousel'] = time() -component_times['RelatedWorksCarousel']
 

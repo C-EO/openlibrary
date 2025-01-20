@@ -1,11 +1,15 @@
-from datetime import datetime
 import logging
 import re
 import sys
-from typing import Any, Callable, Optional
+from collections.abc import Callable
+from copy import deepcopy
+from datetime import datetime
+from typing import Any, cast
 
 import luqum.tree
 import web
+
+import infogami
 from openlibrary.plugins.upstream.utils import convert_iso_to_marc
 from openlibrary.plugins.worksearch.schemes import SearchScheme
 from openlibrary.solr.query_utils import (
@@ -13,7 +17,9 @@ from openlibrary.solr.query_utils import (
     fully_escape_query,
     luqum_parser,
     luqum_remove_child,
+    luqum_remove_field,
     luqum_replace_child,
+    luqum_replace_field,
     luqum_traverse,
 )
 from openlibrary.utils.ddc import (
@@ -45,6 +51,7 @@ class WorkSearchScheme(SearchScheme):
         "ebook_access",
         "edition_count",
         "edition_key",
+        "format",
         "by_statement",
         "publish_date",
         "lccn",
@@ -64,7 +71,6 @@ class WorkSearchScheme(SearchScheme):
         "time",
         "has_fulltext",
         "title_suggest",
-        "edition_count",
         "publish_year",
         "language",
         "number_of_pages_median",
@@ -72,6 +78,11 @@ class WorkSearchScheme(SearchScheme):
         "publisher_facet",
         "author_facet",
         "first_publish_year",
+        "ratings_count",
+        "readinglog_count",
+        "want_to_read_count",
+        "currently_reading_count",
+        "already_read_count",
         # Subjects
         "subject_key",
         "person_key",
@@ -82,6 +93,11 @@ class WorkSearchScheme(SearchScheme):
         "ddc",
         "lcc_sort",
         "ddc_sort",
+        "osp_count",
+    }
+    non_solr_fields = {
+        'description',
+        'providers',
     }
     facet_fields = {
         "has_fulltext",
@@ -114,6 +130,13 @@ class WorkSearchScheme(SearchScheme):
         'editions': 'edition_count desc',
         'old': 'def(first_publish_year, 9999) asc',
         'new': 'first_publish_year desc',
+        'rating': 'ratings_sortable desc',
+        'rating asc': 'ratings_sortable asc',
+        'rating desc': 'ratings_sortable desc',
+        'readinglog': 'readinglog_count desc',
+        'want_to_read': 'want_to_read_count desc',
+        'currently_reading': 'currently_reading_count desc',
+        'already_read': 'already_read_count desc',
         'title': 'title_sort asc',
         'scans': 'ia_count desc',
         # Classifications
@@ -123,6 +146,14 @@ class WorkSearchScheme(SearchScheme):
         'ddc_sort': 'ddc_sort asc',
         'ddc_sort asc': 'ddc_sort asc',
         'ddc_sort desc': 'ddc_sort desc',
+        # Ebook access
+        'ebook_access': 'ebook_access desc',
+        'ebook_access asc': 'ebook_access asc',
+        'ebook_access desc': 'ebook_access desc',
+        # Open Syllabus Project
+        'osp_count': 'osp_count desc',
+        'osp_count asc': 'osp_count asc',
+        'osp_count desc': 'osp_count desc',
         # Key
         'key': 'key asc',
         'key asc': 'key asc',
@@ -154,9 +185,12 @@ class WorkSearchScheme(SearchScheme):
         # FIXME: These should be fetched from book_providers, but can't cause circular
         # dep
         'id_project_gutenberg',
+        'id_project_runeberg',
         'id_librivox',
         'id_standard_ebooks',
         'id_openstax',
+        'id_cita_press',
+        'id_wikisource',
     }
     facet_rewrites = {
         ('public_scan', 'true'): 'ebook_access:public',
@@ -174,6 +208,9 @@ class WorkSearchScheme(SearchScheme):
     }
 
     def is_search_field(self, field: str):
+        # New variable introduced to prevent rewriting the input.
+        if field.startswith(('work.', 'edition.')):
+            return self.is_search_field(field.partition(".")[2])
         return super().is_search_field(field) or field.startswith('id_')
 
     def transform_user_query(
@@ -240,7 +277,7 @@ class WorkSearchScheme(SearchScheme):
 
         return ' AND '.join(q_list)
 
-    def q_to_solr_params(
+    def q_to_solr_params(  # noqa: C901, PLR0915
         self,
         q: str,
         solr_fields: set[str],
@@ -252,7 +289,21 @@ class WorkSearchScheme(SearchScheme):
         # special OL query parsing rules (different from default solr!)
         # See luqum_parser for details.
         work_q_tree = luqum_parser(q)
-        new_params.append(('workQuery', str(work_q_tree)))
+
+        # Removes the work prefix from fields; used as the callable argument for 'luqum_replace_field'
+        def remove_work_prefix(field: str) -> str:
+            return field.partition('.')[2] if field.startswith('work.') else field
+
+        # Removes the indicator prefix from queries with the 'work field' before appending them to parameters.
+        final_work_query = deepcopy(work_q_tree)
+        luqum_replace_field(final_work_query, remove_work_prefix)
+        try:
+            luqum_remove_field(final_work_query, lambda f: f.startswith('edition.'))
+        except EmptyTreeError:
+            # If the whole tree is removed, we should just search for everything
+            final_work_query = luqum_parser('*:*')
+
+        new_params.append(('workQuery', str(final_work_query)))
 
         # This full work query uses solr-specific syntax to add extra parameters
         # to the way the search is processed. We are using the edismax parser.
@@ -261,23 +312,26 @@ class WorkSearchScheme(SearchScheme):
         # query, but much more flexible. We wouldn't be able to do our
         # complicated parent/child queries with defType!
 
-        full_work_query = '({{!edismax q.op="AND" qf="{qf}" bf="{bf}" v={v}}})'.format(
+        full_work_query = '({{!edismax q.op="AND" qf="{qf}" pf="{pf}" bf="{bf}" v={v}}})'.format(
             # qf: the fields to query un-prefixed parts of the query.
             # e.g. 'harry potter' becomes
             # 'text:(harry potter) OR alternative_title:(harry potter)^20 OR ...'
-            qf='text alternative_title^20 author_name^20',
+            qf='text alternative_title^10 author_name^10',
+            # pf: phrase fields. This increases the score of documents that
+            # match the query terms in close proximity to each other.
+            pf='alternative_title^10 author_name^10',
             # bf (boost factor): boost results based on the value of this
             # field. I.e. results with more editions get boosted, upto a
             # max of 100, after which we don't see it as good signal of
             # quality.
-            bf='min(100,edition_count)',
+            bf='min(100,edition_count) min(100,def(readinglog_count,0))',
             # v: the query to process with the edismax query parser. Note
             # we are using a solr variable here; this reads the url parameter
             # arbitrarily called workQuery.
             v='$workQuery',
         )
-
         ed_q = None
+        full_ed_query = None
         editions_fq = []
         if has_solr_editions_enabled() and 'editions:[subquery]' in solr_fields:
             WORK_FIELD_TO_ED_FIELD: dict[str, str | Callable[[str], str]] = {
@@ -288,13 +342,17 @@ class WorkSearchScheme(SearchScheme):
                 'title': 'title',
                 'title_suggest': 'title_suggest',
                 'subtitle': 'subtitle',
-                # TODO: Change to alternative_title after full reindex
-                # Use an OR until that happens, but this will still miss the
-                # "other_titles" field
-                'alternative_title': lambda expr: f'title:({expr}) OR subtitle:({expr})',
+                'alternative_title': 'alternative_title',
                 'alternative_subtitle': 'subtitle',
                 'cover_i': 'cover_i',
+                # Duplicate author fields
+                # Disabled until the next full reindex
+                # 'author_name': 'author_name',
+                # 'author_key': 'author_key',
+                # 'author_alternative_name': 'author_alternative_name',
+                # 'author_facet': 'author_facet',
                 # Misc useful data
+                'format': 'format',
                 'language': 'language',
                 'publisher': 'publisher',
                 'publisher_facet': 'publisher_facet',
@@ -314,7 +372,7 @@ class WorkSearchScheme(SearchScheme):
 
             def convert_work_field_to_edition_field(
                 field: str,
-            ) -> Optional[str | Callable[[str], str]]:
+            ) -> str | Callable[[str], str] | None:
                 """
                 Convert a SearchField name (eg 'title') to the correct fieldname
                 for use in an edition query.
@@ -325,7 +383,7 @@ class WorkSearchScheme(SearchScheme):
                     return WORK_FIELD_TO_ED_FIELD[field]
                 elif field.startswith('id_'):
                     return field
-                elif field in self.all_fields or field in self.facet_fields:
+                elif self.is_search_field(field) or field in self.facet_fields:
                     return None
                 else:
                     raise ValueError(f'Unknown field: {field}')
@@ -336,10 +394,14 @@ class WorkSearchScheme(SearchScheme):
                 invalid fields, or renaming fields as necessary.
                 """
                 q_tree = luqum_parser(work_query)
-
                 for node, parents in luqum_traverse(q_tree):
                     if isinstance(node, luqum.tree.SearchField) and node.name != '*':
-                        new_name = convert_work_field_to_edition_field(node.name)
+                        if node.name.startswith('edition.'):
+                            ed_field = node.name.partition('.')[2]
+                        else:
+                            ed_field = node.name
+
+                        new_name = convert_work_field_to_edition_field(ed_field)
                         if new_name is None:
                             try:
                                 luqum_remove_child(node, parents)
@@ -360,6 +422,22 @@ class WorkSearchScheme(SearchScheme):
                                 node.name = new_name
                             else:
                                 node.name = f'+{new_name}'
+                            if new_name == 'key':
+                                # need to convert eg 'edition_key:OL123M' to
+                                # 'key:(/books/OL123M)'. Or
+                                # key:(/books/OL123M OR /books/OL456M)
+                                for n, n_parents in luqum_traverse(node.expr):
+                                    if isinstance(
+                                        n, (luqum.tree.Word, luqum.tree.Phrase)
+                                    ):
+                                        val = (
+                                            n.value
+                                            if isinstance(n, luqum.tree.Word)
+                                            else n.value[1:-1]
+                                        )
+                                        if val.startswith('/books/'):
+                                            val = val[7:]
+                                        n.value = f'"/books/{val}"'
                         elif callable(new_name):
                             # Replace this node with a new one
                             # First process the expr
@@ -378,7 +456,6 @@ class WorkSearchScheme(SearchScheme):
                         else:
                             # Shouldn't happen
                             raise ValueError(f'Invalid new_name: {new_name}')
-
                 return str(q_tree)
 
             # Move over all fq parameters that can be applied to editions.
@@ -388,8 +465,7 @@ class WorkSearchScheme(SearchScheme):
                 if param_name != 'fq' or param_value.startswith('type:'):
                     continue
                 field_name, field_val = param_value.split(':', 1)
-                ed_field = convert_work_field_to_edition_field(field_name)
-                if ed_field:
+                if ed_field := convert_work_field_to_edition_field(field_name):
                     editions_fq.append(f'{ed_field}:{field_val}')
             for fq in editions_fq:
                 new_params.append(('editions.fq', fq))
@@ -399,7 +475,7 @@ class WorkSearchScheme(SearchScheme):
             ed_q = convert_work_query_to_edition_query(str(work_q_tree))
             full_ed_query = '({{!edismax bq="{bq}" v="{v}" qf="{qf}"}})'.format(
                 # See qf in work_query
-                qf='text title^4',
+                qf='text alternative_title^4 author_name^4',
                 # Because we include the edition query inside the v="..." part,
                 # we need to escape quotes. Also note that if there is no
                 # edition query (because no fields in the user's work query apply),
@@ -421,10 +497,7 @@ class WorkSearchScheme(SearchScheme):
         if ed_q or len(editions_fq) > 1:
             # The elements in _this_ edition query should cause works not to
             # match _at all_ if matching editions are not found
-            if ed_q:
-                new_params.append(('edQuery', full_ed_query))
-            else:
-                new_params.append(('edQuery', '*:*'))
+            new_params.append(('edQuery', cast(str, full_ed_query) if ed_q else '*:*'))
             q = (
                 f'+{full_work_query} '
                 # This is using the special parent query syntax to, on top of
@@ -437,11 +510,24 @@ class WorkSearchScheme(SearchScheme):
                 ')'
             )
             new_params.append(('q', q))
+        else:
+            new_params.append(('q', full_work_query))
+
+        if full_ed_query:
             edition_fields = {
                 f.split('.', 1)[1] for f in solr_fields if f.startswith('editions.')
             }
             if not edition_fields:
-                edition_fields = solr_fields - {'editions:[subquery]'}
+                edition_fields = solr_fields - {
+                    # Default to same fields as for the work...
+                    'editions:[subquery]',
+                    # but exclude the author fields since they're primarily work data;
+                    # they only exist on editions to improve search matches.
+                    'author_name',
+                    'author_key',
+                    'author_alternative_name',
+                    'author_facet',
+                }
             # The elements in _this_ edition query will match but not affect
             # whether the work appears in search results
             new_params.append(
@@ -454,10 +540,41 @@ class WorkSearchScheme(SearchScheme):
             )
             new_params.append(('editions.rows', '1'))
             new_params.append(('editions.fl', ','.join(edition_fields)))
-        else:
-            new_params.append(('q', full_work_query))
-
         return new_params
+
+    def add_non_solr_fields(self, non_solr_fields: set[str], solr_result: dict) -> None:
+        from openlibrary.plugins.upstream.models import Edition
+
+        # Augment with data from db
+        edition_keys = [
+            ed_doc['key']
+            for doc in solr_result['response']['docs']
+            for ed_doc in doc.get('editions', {}).get('docs', [])
+        ]
+        editions = cast(list[Edition], web.ctx.site.get_many(edition_keys))
+        ed_key_to_record = {ed.key: ed for ed in editions if ed.key in edition_keys}
+
+        from openlibrary.book_providers import get_book_provider
+
+        for doc in solr_result['response']['docs']:
+            for ed_doc in doc.get('editions', {}).get('docs', []):
+                # `ed` could be `None` if the record has been deleted and Solr not yet updated.
+                if not (ed := ed_key_to_record.get(ed_doc['key'])):
+                    continue
+
+                for field in non_solr_fields:
+                    val = getattr(ed, field)
+                    if field == 'providers':
+                        provider = get_book_provider(ed)
+                        if not provider:
+                            continue
+                        ed_doc[field] = [
+                            p.__dict__ for p in provider.get_acquisitions(ed)
+                        ]
+                    elif isinstance(val, infogami.infobase.client.Nothing):
+                        continue
+                    elif field == 'description':
+                        ed_doc[field] = val if isinstance(val, str) else val.value
 
 
 def lcc_transform(sf: luqum.tree.SearchField):

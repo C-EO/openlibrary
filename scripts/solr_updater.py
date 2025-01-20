@@ -6,24 +6,26 @@ Changes:
 2013-02-25: First version
 2018-02-11: Use newer config method
 """
-from typing import Union
-from collections.abc import Iterator
-import _init_path  # noqa: F401  Imported for its side effect of setting PYTHONPATH
 
-import logging
-import json
+import asyncio
 import datetime
-import time
-import web
-import sys
+import json
+import logging
 import re
 import socket
+import sys
 import urllib
+from collections.abc import Iterator
+from pathlib import Path
 
-from openlibrary.solr import update_work
-from openlibrary.config import load_config
+import _init_path  # noqa: F401 Imported for its side effect of setting PYTHONPATH
+import aiofiles
+import web
+
 from infogami import config
-from openlibrary.solr.update_work import CommitRequest
+from openlibrary.config import load_config
+from openlibrary.solr import update
+from openlibrary.utils.open_syllabus_project import set_osp_dump_location
 
 logger = logging.getLogger("openlibrary.solr-updater")
 # FIXME: Some kind of hack introduced to work around DB connectivity issue
@@ -108,7 +110,7 @@ class InfobaseLog:
             self.offset = d['offset']
 
 
-def find_keys(d: Union[dict, list]) -> Iterator[str]:
+def find_keys(d: dict | list) -> Iterator[str]:
     """
     Find any keys in the given dict or list.
 
@@ -213,24 +215,19 @@ async def update_keys(keys):
         return 0
 
     # FIXME: Some kind of hack introduced to work around DB connectivity issue
-    global args
     logger.debug("Args: %s" % str(args))
-    update_work.load_configs(args['ol_url'], args['ol_config'], 'default')
+    update.load_configs(args['ol_url'], args['ol_config'], 'default')
 
-    keys = [
-        k
-        for k in keys
-        if k.count("/") == 2 and k.split("/")[1] in ("books", "authors", "works")
-    ]
+    keys = [k for k in keys if update.can_update_key(k)]
 
     count = 0
     for chunk in web.group(keys, 100):
         chunk = list(chunk)
         count += len(chunk)
-        await update_work.do_updates(chunk)
+        await update.do_updates(chunk)
 
         # Caches should not persist between different calls to update_keys!
-        update_work.data_provider.clear_cache()
+        update.data_provider.clear_cache()
 
     if count:
         logger.info("updated %d documents", count)
@@ -240,6 +237,7 @@ async def update_keys(keys):
 
 async def main(
     ol_config: str,
+    osp_dump: Path | None = None,
     debugger: bool = False,
     state_file: str = 'solr-update.state',
     exclude_edits_containing: str | None = None,
@@ -262,12 +260,12 @@ async def main(
     logger.info("BEGIN solr_updater")
 
     if debugger:
-        import debugpy
+        import debugpy  # noqa: T100
 
         logger.info("Enabling debugger attachment (attach if it hangs here)")
-        debugpy.listen(address=('0.0.0.0', 3000))
+        debugpy.listen(address=('0.0.0.0', 3000))  # noqa: T100
         logger.info("Waiting for debugger to attach...")
-        debugpy.wait_for_client()
+        debugpy.wait_for_client()  # noqa: T100
         logger.info("Debugger attached to port 3000")
 
     # Sometimes archive.org requests blocks forever.
@@ -277,12 +275,13 @@ async def main(
     # set OL URL when running on a dev-instance
     if ol_url:
         host = web.lstrips(ol_url, "http://").strip("/")
-        update_work.set_query_host(host)
+        update.set_query_host(host)
 
     if solr_url:
-        update_work.set_solr_base_url(solr_url)
+        update.set_solr_base_url(solr_url)
 
-    update_work.set_solr_next(solr_next)
+    update.set_solr_next(solr_next)
+    set_osp_dump_location(osp_dump)
 
     logger.info("loading config from %s", ol_config)
     load_config(ol_config)
@@ -302,14 +301,14 @@ async def main(
         if logfile.tell() != offset:
             offset = logfile.tell()
             logger.info("saving offset %s", offset)
-            with open(state_file, "w") as f:
-                f.write(offset)
+            async with aiofiles.open(state_file, "w") as f:
+                await f.write(offset)
 
         # don't sleep after committing some records.
         # While the commit was on, some more edits might have happened.
         if count == 0:
             logger.debug("No more log records available, sleeping...")
-            time.sleep(5)
+            await asyncio.sleep(5)
 
 
 if __name__ == "__main__":

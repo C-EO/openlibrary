@@ -1,13 +1,12 @@
-"""Admin functionality.
-"""
+"""Admin functionality."""
 
 import calendar
 import datetime
 
 import requests
 import web
-from infogami import config
 
+from infogami import config
 from openlibrary.core import cache
 
 
@@ -42,7 +41,7 @@ class Stats:
 
         def _convert_to_milli_timestamp(d):
             """Uses the `_id` of the document `d` to create a UNIX
-            timestamp and coverts it to milliseconds"""
+            timestamp and converts it to milliseconds"""
             t = datetime.datetime.strptime(d, "counts-%Y-%m-%d")
             return calendar.timegm(t.timetuple()) * 1000
 
@@ -65,6 +64,25 @@ class Stats:
         return sum(x[1] for x in self.get_counts(ndays))
 
 
+@cache.memoize(
+    engine="memcache", key="admin._get_loan_counts_from_graphite", expires=5 * 60
+)
+def _get_loan_counts_from_graphite(ndays: int) -> list[list[int]] | None:
+    try:
+        r = requests.get(
+            'http://graphite.us.archive.org/render',
+            params={
+                'target': 'hitcount(stats.ol.loans.bookreader, "1d")',
+                'from': '-%ddays' % ndays,
+                'tz': 'UTC',
+                'format': 'json',
+            },
+        )
+        return r.json()[0]['datapoints']
+    except (requests.exceptions.RequestException, ValueError, AttributeError):
+        return None
+
+
 class LoanStats(Stats):
     """
     Temporary (2020-03-19) override of Stats for loans, due to bug
@@ -73,32 +91,51 @@ class LoanStats(Stats):
     so that we don't forget.
     """
 
-    @cache.method_memoize
-    def _get_graphite_data(self, ndays):
-        try:
-            r = requests.get(
-                'http://graphite.us.archive.org/render',
-                params={
-                    'target': 'hitcount(stats.ol.loans.bookreader, "1d")',
-                    'from': '-%ddays' % ndays,
-                    'tz': 'UTC',
-                    'format': 'json',
-                },
-            )
-            return r.json()[0]['datapoints']
-        except (requests.exceptions.RequestException, ValueError, AttributeError):
-            return None
-
     def get_counts(self, ndays=28, times=False):
         # Let dev.openlibrary.org show the true state of things
         if 'dev' in config.features:
             return Stats.get_counts(self, ndays, times)
 
-        if graphite_data := self._get_graphite_data(ndays):
+        if graphite_data := _get_loan_counts_from_graphite(ndays):
             # convert timestamp seconds to ms (as required by API)
             return [[timestamp * 1000, count] for [count, timestamp] in graphite_data]
         else:
             return Stats.get_counts(self, ndays, times)
+
+
+@cache.memoize(
+    engine="memcache", key="admin._get_visitor_counts_from_graphite", expires=5 * 60
+)
+def _get_visitor_counts_from_graphite(self, ndays: int = 28) -> list[list[int]]:
+    """
+    Read the unique visitors (IP addresses) per day for the last ndays from graphite.
+    :param ndays: number of days to read
+    :return: list containing [count, timestamp] for ndays
+    """
+    try:
+        response = requests.get(
+            "http://graphite.us.archive.org/render/",
+            params={
+                "target": "summarize(stats.uniqueips.openlibrary, '1d')",
+                "from": f"-{ndays}days",
+                "tz": "UTC",
+                "format": "json",
+            },
+        )
+        response.raise_for_status()
+        visitors = response.json()[0]['datapoints']
+    except requests.exceptions.RequestException:
+        visitors = []
+    return visitors
+
+
+class VisitorStats(Stats):
+    def get_counts(self, ndays: int = 28, times: bool = False) -> list[tuple[int, int]]:
+        visitors = _get_visitor_counts_from_graphite(ndays)
+        # Flip the order, convert timestamp to msec, and convert count==None to zero
+        return [
+            (int(timestamp * 1000), int(count or 0)) for count, timestamp in visitors
+        ]
 
 
 @cache.memoize(engine="memcache", key="admin._get_count_docs", expires=5 * 60)
@@ -117,15 +154,58 @@ def _get_count_docs(ndays):
     return [d for d in docs if d]
 
 
-def get_stats(ndays=30):
+def get_stats(ndays=30, use_mock_data=False):
     """Returns the stats for the past `ndays`"""
+    if use_mock_data:
+        return mock_get_stats()
     docs = _get_count_docs(ndays)
     return {
         'human_edits': Stats(docs, "human_edits", "human_edits"),
         'bot_edits': Stats(docs, "bot_edits", "bot_edits"),
         'lists': Stats(docs, "lists", "total_lists"),
-        'visitors': Stats(docs, "visitors", "visitors"),
+        'visitors': VisitorStats(docs, "visitors", "visitors"),
         'loans': LoanStats(docs, "loans", "loans"),
+        'members': Stats(docs, "members", "total_members"),
+        'works': Stats(docs, "works", "total_works"),
+        'editions': Stats(docs, "editions", "total_editions"),
+        'ebooks': Stats(docs, "ebooks", "total_ebooks"),
+        'covers': Stats(docs, "covers", "total_covers"),
+        'authors': Stats(docs, "authors", "total_authors"),
+        'subjects': Stats(docs, "subjects", "total_subjects"),
+    }
+
+
+def mock_get_stats():
+    keyNames = [
+        "human_edits",
+        "bot_edits",
+        "lists",
+        "visitors",
+        "loans",
+        "members",
+        "works",
+        "editions",
+        "ebooks",
+        "covers",
+        "authors",
+        "subjects",
+    ]
+    mockKeyValues = [[(1 + x) * y for x in range(len(keyNames))] for y in range(28)][
+        ::-1
+    ]
+
+    docs = [dict(zip(keyNames, mockKeyValues[x])) for x in range(len(mockKeyValues))]
+    today = datetime.date.today()
+    for x in range(28):
+        docs[x]["_key"] = (today - datetime.timedelta(days=x + 1)).strftime(
+            'counts-%Y-%m-%d'
+        )
+    return {
+        'human_edits': Stats(docs, "human_edits", "human_edits"),
+        'bot_edits': Stats(docs, "bot_edits", "bot_edits"),
+        'lists': Stats(docs, "lists", "total_lists"),
+        'visitors': Stats(docs, "visitors", "visitors"),
+        'loans': Stats(docs, "loans", "loans"),
         'members': Stats(docs, "members", "total_members"),
         'works': Stats(docs, "works", "total_works"),
         'editions': Stats(docs, "editions", "total_editions"),

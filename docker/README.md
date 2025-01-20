@@ -60,7 +60,7 @@ Please use [Docker Desktop >= 4.3.0](https://docs.docker.com/desktop/mac/release
 If you are experiencing issues building JS, you may need to increase the RAM available to Docker. The defaults of 2GB ram and 1GB Swap are not enough. We recommend requirements of 4GB ram and 2GB swap. This resolved the error message of `Killed` when running `build-assets`.
 
 ### For All Users
-All commands are from the project root directory, where `docker-compose.yml` is (i.e. `path/to/your/forked/and/cloned/openlibrary`):
+All commands are from the project root directory, where `compose.yaml` is (i.e. `path/to/your/forked/and/cloned/openlibrary`):
 
 #### Build the images
 ```
@@ -108,25 +108,59 @@ Note: please update this README with the exact wording of the error if you run i
 
 `OSError: [Errno 12] Cannot allocate memory:` could occur in conjunction with `/openlibrary/openlibrary/core` or any number of files. Simply try increasing free RAM or increasing swap/page file/virtual memory for your operating system.
 
-
 #### "No module named 'infogami'"
 
 The following should populate the target of the `infogami` symbolic link (i.e. `vendor/infogami/`):
 ```
-cd local-openlibrary-dev-directory
+cd path/to/your/cloned/openlibrary
 git submodule init; git submodule sync; git submodule update
 ```
-
 Windows users may need to see [Fix line endings, symlinks, and git submodules](https://github.com/internetarchive/openlibrary/wiki/Git-Cheat-Sheet#fix-line-endings-symlinks-and-git-submodules-only-for-windows-users-not-using-a-linux-vm).
 
 #### "no configuration file provided: not found" when running `docker compose <command>`
 
 Ensure you're running `docker compose` commands from within the `local-openlibrary-dev-directory`.
 
+### ConnectionError: HTTPConnectionPool(host='solr', port=8983)
+The full error is something like (line breaks added):
+```
+/openlibrary/openlibrary/templates/home/index.html: error in processing
+ template: ConnectionError: HTTPConnectionPool(host='solr', port=8983):
+Max retries exceeded with url: /solr/openlibrary/select (Caused by
+NameResolutionError("<urllib3.connection.HTTPConnection object at
+0x77a95c4e7f90>: Failed to resolve 'solr' ([Errno -2] Name or service
+not known)")) (falling back to default template)
+```
+The following should get everything running again:
+```sh
+docker compose down
+docker container ls -a
+# If you see any openlibrary container here, remove them with `docker rm -f NAME`
+docker network ls
+# If you see any open library networks here, remove them with `docker network rm NAME
+docker compose up  # or docker compose up -d
+```
+If you're curious and want to understand what happened, and why the above likely fixes it, first, verify the `solr` container is running (e.g. `docker ps | grep solr`, and then look for something like `openlibrary-solr-1` that isn't `solr-updater`.) If the `solr` container isn't running, simply start it with `docker compose up solr` (or `docker compose up -d solr`) and that should fix it. If `solr` is running, verify too that you can also connect to solr at http://localhost:8983/solr/#/. If you can't, something else is likely wrong.
+
+If the `solr` container is running and the error persists, one cause seems to be that the containers sometimes become disconnected from `openlibrary_webnet` (though this could happen with `openlibrary_dbnet` too). `openlibrary-web-1`/`web` should be connected to both `openlibrary_webnet` and `openlibrary_dbnet`, but when this problem occurs, instead only one is connected. E.g.:
+```sh
+docker container inspect --format '{{.NetworkSettings.Networks}}' openlibrary-web-1
+# output: map[openlibrary_dbnet:0xc00037c1c0]
+```
+Because you've read this far, you can now directly fix the problem without removing the containers and networks. Simply reconnect the container to the network:
+```
+docker network connect openlibrary_webnet openlibrary-web-1  # or `openlibrary_dbnet` as the case may be.
+docker container inspect --format '{{.NetworkSettings.Networks}}' openlibrary-web-1
+# output: map[openlibrary_dbnet:0xc00016c460 openlibrary_webnet:0xc00016c540]
+```
+No restart is required. If `webnet` no longer exists, recreating it _should_ fix things: `docker network create openlibrary_webnet`.
+
+To understand a bit more about what's going on here, there are docker networks configured in `compose.yaml`. The containers should be able to resolve one another based on the container names (e.g. `web` and `solr`), assuming `compose.yaml` has them on the same netork. For more, see [Networking in Compose](https://docs.docker.com/compose/networking/).
+
 ## Teardown commands
 
 ```sh
-cd local-openlibrary-dev-directory
+cd path/to/your/cloned/openlibrary
 # stop the app (if started in detached mode)
 docker compose down
 
@@ -155,7 +189,7 @@ For changes to the frontend (JS, CSS, and HTML/[Templetor](http://webpy.org/docs
 
 Other changes:
 - **Editing pip packages?** Rebuild the `home` service: `docker compose build home`
-- **Editing npm packages?** Run `docker compose run --rm home npm install` (see [#2032](https://github.com/internetarchive/openlibrary/issues/2032) for why)
+- **Editing npm packages?** Run `docker compose run --rm home npm install --no-audit` (see [#2032](https://github.com/internetarchive/openlibrary/issues/2032) for why)
 - **Editing core dependencies?** You will most likely need to do a full rebuild. This shouldn't happen too frequently. If you are making this sort of change, you will know exactly what you are doing ;) See [Developing the Dockerfile](#developing-the-dockerfile).
 
 ## Useful Runtime Commands
@@ -175,7 +209,7 @@ docker compose run --rm home make test
 
 # Install Node.js modules (if you get an error running tests)
 # Important: npm jobs need to be run inside the Docker environment.
-docker compose run --rm home npm install
+docker compose run --rm home npm install --no-audit
 # build JS/CSS assets:
 docker compose run --rm home npm run build-assets
 ```
@@ -188,12 +222,14 @@ Been away for a while? Are you getting strange errors you weren't getting before
 # Stop the site
 docker compose down
 
-# Build the latest oldev image, whilst also pulling the latest olbase image from docker hub
-# (Takes a while; ~20min for me)
-docker compose build --pull
+# Build the latest oldev image, without cache, whilst also pulling the latest olbase image from docker hub.
+# This can take from a few minutes to more than 20 on older hardware.
+docker compose build --pull --no-cache
 
-# Remove any old containers; if you use docker for something special, and have containers you don't want to lose, be careful with this. But you likely don't :)
-docker container prune
+# Remove any old containers/images
+# If you use docker for other things, and have containers/images you don't want to lose, be careful with this. But you likely don't :)
+docker container prune --filter label="com.docker.compose.project=openlibrary" --force
+docker image prune --filter label="com.docker.compose.project=openlibrary" --force
 
 # Remove volumes that might have outdated dependencies/code
 docker volume rm openlibrary_ol-build openlibrary_ol-nodemodules openlibrary_ol-vendor
@@ -225,6 +261,10 @@ docker compose run --rm home npm run build-assets
 ```
 Note: This is only if you already have an existing docker image, this command is unnecessary the first time you build.
 
+## Debugging and Profiling the Docker Image
+
+See [Debugging and Performance Profiling](https://github.com/internetarchive/openlibrary/wiki/Debugging-and-Performance-Profiling) for more information on how to attach a debugger when running in the Docker Container.
+
 ## Other Commands
 
 https://github.com/internetarchive/openlibrary/wiki/Deployment-Guide#ol-web1
@@ -236,7 +276,7 @@ docker compose run --rm home make test
 # Run Open Library using a local copy of Infogami for development
 
 docker compose down && \
-    docker compose -f docker compose.yml -f docker compose.override.yml -f docker compose.infogami-local.yml up -d && \
+    docker compose -f compose.yaml -f compose.override.yaml -f compose.infogami-local.yaml up -d && \
     docker compose logs -f --tail=10 web
 
 # In your browser, navigate to http://localhost:8080

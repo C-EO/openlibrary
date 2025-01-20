@@ -1,14 +1,17 @@
-from dataclasses import dataclass
 import logging
 import re
+from dataclasses import dataclass
 
 import sentry_sdk
 import web
+from sentry_sdk.tracing import TRANSACTION_SOURCE_ROUTE, Transaction
 from sentry_sdk.utils import capture_internal_exceptions
-from sentry_sdk.tracing import Transaction, TRANSACTION_SOURCE_ROUTE
-from infogami.utils.app import find_page, find_view, modes
-from infogami.utils.types import type_patterns
 
+from infogami.utils.app import (
+    find_page,
+    modes,
+)
+from infogami.utils.types import type_patterns
 from openlibrary.utils import get_software_version
 
 
@@ -65,6 +68,7 @@ class Sentry:
             dsn=self.config['dsn'],
             environment=self.config['environment'],
             traces_sample_rate=self.config.get('traces_sample_rate', 0.0),
+            profiles_sample_rate=self.config.get('profiles_sample_rate', 0.0),
             release=get_software_version(),
         )
 
@@ -76,11 +80,17 @@ class Sentry:
             return _internalerror()
 
         app.internalerror = capture_exception
+        app.add_processor(WebPySentryProcessor(app))
 
     def capture_exception_webpy(self):
         with sentry_sdk.push_scope() as scope:
             scope.add_event_processor(add_web_ctx_to_event)
             sentry_sdk.capture_exception()
+
+    def capture_exception(self, ex):
+        with sentry_sdk.push_scope() as scope:
+            scope.add_event_processor(add_web_ctx_to_event)
+            sentry_sdk.capture_exception(ex)
 
 
 @dataclass
@@ -97,12 +107,48 @@ class InfogamiRoute:
         )
 
 
-class SentryProcessor:
+class WebPySentryProcessor:
+    def __init__(self, app: web.application):
+        self.app = app
+
+    def find_route_name(self) -> str:
+        handler, groups = self.app._match(self.app.mapping, web.ctx.path)
+        web.debug('ROUTE HANDLER', handler, groups)
+        return handler or '<other>'
+
+    def __call__(self, handler):
+        route_name = self.find_route_name()
+        hub = sentry_sdk.Hub.current
+        with sentry_sdk.Hub(hub) as hub:
+            with hub.configure_scope() as scope:
+                scope.clear_breadcrumbs()
+                scope.add_event_processor(add_web_ctx_to_event)
+
+            environ = dict(web.ctx.env)
+            # Don't forward cookies to Sentry
+            if 'HTTP_COOKIE' in environ:
+                del environ['HTTP_COOKIE']
+
+            transaction = Transaction.continue_from_environ(
+                environ,
+                op="http.server",
+                name=route_name,
+                source=TRANSACTION_SOURCE_ROUTE,
+            )
+
+            with hub.start_transaction(transaction):
+                try:
+                    return handler()
+                finally:
+                    transaction.set_http_status(int(web.ctx.status.split()[0]))
+
+
+class InfogamiSentryProcessor(WebPySentryProcessor):
     """
     Processor to profile the webpage and send a transaction to Sentry.
     """
 
-    def __call__(self, handler):
+    def find_route_name(self) -> str:
         def find_type() -> tuple[str, str] | None:
             return next(
                 (
@@ -134,27 +180,4 @@ class SentryProcessor:
 
             return result
 
-        route = find_route()
-        hub = sentry_sdk.Hub.current
-        with sentry_sdk.Hub(hub) as hub:
-            with hub.configure_scope() as scope:
-                scope.clear_breadcrumbs()
-                scope.add_event_processor(add_web_ctx_to_event)
-
-            environ = dict(web.ctx.env)
-            # Don't forward cookies to Sentry
-            if 'HTTP_COOKIE' in environ:
-                del environ['HTTP_COOKIE']
-
-            transaction = Transaction.continue_from_environ(
-                environ,
-                op="http.server",
-                name=route.to_sentry_name(),
-                source=TRANSACTION_SOURCE_ROUTE,
-            )
-
-            with hub.start_transaction(transaction):
-                try:
-                    return handler()
-                finally:
-                    transaction.set_http_status(int(web.ctx.status.split()[0]))
+        return find_route().to_sentry_name()

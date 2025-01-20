@@ -1,17 +1,22 @@
-import sys
-from collections.abc import Iterator
-
-import web
 import os
 import shutil
+import subprocess
+import sys
+from collections.abc import Iterator
+from datetime import datetime
+from io import BytesIO
+from pathlib import Path
 
 import babel
-from babel._compat import BytesIO
-from babel.support import Translations
+import web
 from babel.messages import Catalog, Message
-from babel.messages.pofile import read_po, write_po
+from babel.messages.extract import (
+    extract_from_dir,
+    extract_python,
+)
 from babel.messages.mofile import write_mo
-from babel.messages.extract import extract_from_file, extract_from_dir, extract_python
+from babel.messages.pofile import read_po, write_po
+from babel.support import Translations
 
 from .validators import validate
 
@@ -31,6 +36,23 @@ def success_color_fn(text: str) -> str:
 def warning_color_fn(text: str) -> str:
     """Styles the text for printing to console with warning color."""
     return '\033[93m' + text + '\033[0m'
+
+
+def get_untracked_files(dirs: list[str], extensions: tuple[str, str] | str) -> set:
+    """Returns a set of all currently untracked files with specified extension(s)."""
+    untracked_files = {
+        Path(line)
+        for dir in dirs
+        for line in subprocess.run(
+            ['git', 'ls-files', '--others', '--exclude-standard', dir],
+            stdout=subprocess.PIPE,
+            text=True,
+            check=True,
+        ).stdout.split('\n')
+        if line.endswith(extensions)
+    }
+
+    return untracked_files
 
 
 def _compile_translation(po, mo):
@@ -139,10 +161,21 @@ def extract_templetor(fileobj, keywords, comment_tags, options):
     return extract_python(f, keywords, comment_tags, options)
 
 
-def extract_messages(dirs: list[str]):
-    catalog = Catalog(project='Open Library', copyright_holder='Internet Archive')
+def extract_messages(dirs: list[str], verbose: bool, skip_untracked: bool):
+    # The creation date is fixed to prevent merge conflicts on this line as a result of i18n auto-updates
+    # In the unlikely event we need to update the fixed creation date, you can change the hard-coded date below
+    fixed_creation_date = datetime.fromisoformat('2024-05-01 18:58-0400')
+    catalog = Catalog(
+        project='Open Library',
+        copyright_holder='Internet Archive',
+        creation_date=fixed_creation_date,
+    )
     METHODS = [("**.py", "python"), ("**.html", "openlibrary.i18n:extract_templetor")]
     COMMENT_TAGS = ["NOTE:"]
+
+    skipped_files = set()
+    if skip_untracked:
+        skipped_files = get_untracked_files(dirs, ('.py', '.html'))
 
     for d in dirs:
         extracted = extract_from_dir(
@@ -151,19 +184,23 @@ def extract_messages(dirs: list[str]):
 
         counts: dict[str, int] = {}
         for filename, lineno, message, comments, context in extracted:
+            file_path = Path(d) / filename
+            if file_path in skipped_files:
+                continue
             counts[filename] = counts.get(filename, 0) + 1
             catalog.add(message, None, [(filename, lineno)], auto_comments=comments)
 
-        for filename, count in counts.items():
-            path = filename if d == filename else os.path.join(d, filename)
-            print(f"{count}\t{path}", file=sys.stderr)
+        if verbose:
+            for filename, count in counts.items():
+                path = filename if d == filename else os.path.join(d, filename)
+                print(f"{count}\t{path}", file=sys.stderr)
 
     path = os.path.join(root, 'messages.pot')
     f = open(path, 'wb')
-    write_po(f, catalog)
+    write_po(f, catalog, include_lineno=False)
     f.close()
 
-    print('wrote template to', path)
+    print('Updated strings written to', path)
 
 
 def compile_translations(locales: list[str]):
@@ -216,7 +253,9 @@ def check_status(locales: list[str]):
             with open(po_path, 'rb') as f:
                 catalog = read_po(f)
                 ids_with_translations = {
-                    message.id for message in catalog if ''.join(message.string).strip()
+                    message.id
+                    for message in catalog
+                    if ''.join(message.string or '').strip()
                 }
 
             ids_completed = message_ids.intersection(ids_with_translations)
@@ -239,9 +278,7 @@ def check_status(locales: list[str]):
             percent_color = (
                 success_color_fn
                 if percent_complete == 100
-                else warning_color_fn
-                if percent_complete > 25
-                else error_color_fn
+                else warning_color_fn if percent_complete > 25 else error_color_fn
             )
             print(
                 total_color(

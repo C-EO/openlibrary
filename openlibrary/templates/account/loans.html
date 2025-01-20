@@ -56,7 +56,7 @@ $else:
         <thead>
             <tr>
                 <th class="titles" colspan="2">
-                $ungettext("1 Current Loan", "%(count)d Current Loans", len(loans), count=len(loans))
+                $ungettext("%(count)d Current Loan", "%(count)d Current Loans", len(loans), count=len(loans))
                 </th>
                 <th class="expires">$_("Loan Expires")</th>
                 <th class="actions">$_("Loan actions")</th>
@@ -78,7 +78,7 @@ $else:
                     </a>
                     </span>
                     <span class="author">
-                    $:macros.BookByline([(a.name, a.url()) for a in book.get_authors()])
+                    $:macros.BookByline([{'name': a.name, 'url': a.url()} for a in book.get_authors()])
                     </span>
                     <div class="date">
                     Borrowed $datestr(datetime_from_utc_timestamp(loan['loaned_at']))
@@ -86,7 +86,7 @@ $else:
                     $ wlsize = book.get_waitinglist_size()
                     $if wlsize:
                         <div class="smallest lightgreen sansserif waitrank">
-                            $ungettext("There is one person waiting for this book.", "There are %(n)d people waiting for this book.", wlsize, n=wlsize)
+                            $ungettext("There is %(count)d person waiting for this book.", "There are %(count)d people waiting for this book.", wlsize, count=wlsize)
                         </div>
                 </td>
                 <td class="expires">
@@ -124,23 +124,12 @@ $else:
     $else:
         <div id="leave-waitinglist-dialog" class="hidden dialog"
              title="$_('Leave the Waiting List')">$:_('Are you sure you want to leave the waiting list of<br/><strong>TITLE</strong>?')</div>
-        <script type="text/javascript">
-        window.q.push(function() {
-            \$("a.leave").on('click', function() {
-                var title = \$(this).parents("tr").find(".book").text();
-                \$("#leave-waitinglist-dialog strong").text(title);
-                \$("#leave-waitinglist-dialog")
-                    .data("origin", \$(this))
-                    .dialog("open");
-            });
-        });
-        </script>
         <div class="borrow borrow-table collapse waitinglist">
           <table>
               <thead>
                   <tr>
                       <th class="titles" colspan="2">
-                      $ungettext("1 book", "%(count)d books", len(waitinglist), count=len(waitinglist))
+                      $ungettext("%(count)d book", "%(count)d books", len(waitinglist), count=len(waitinglist))
                       </th>
                       <th class="status">$_("Status")</th>
                       <th class="actions">$_("Actions")</th>
@@ -161,7 +150,7 @@ $else:
                               <a href="$book.key" class="borrowResults"><strong>$book.title</strong></a>
                           </span>
                           <span class="author">
-                              $:macros.BookByline([(a.name, a.url()) for a in book.get_authors()])
+                              $:macros.BookByline([{'name': a.name, 'url': a.url()} for a in book.get_authors()])
                           </span>
                           <div class="date">
                               $ ndays = record.get_waiting_in_days()
@@ -192,7 +181,7 @@ $else:
                           $if status == "available":
                               <form action="$book.url('/borrow')" method="post">
                                   <input type="hidden" name="action" value="borrow" />
-                                  <input type="submit" value=$_("Borrow Now") />
+                                  <input type="submit" value="$_('Borrow Now')" />
                               </form>
                           <form action="$book.url('/borrow?redirect=/account/loans')"
                                 method="POST" class="wlform">
@@ -210,7 +199,7 @@ $else:
 <hr/>
 <br/>
 
-<div>Looking for a book to borrow?  Check out our staff picks, or search for a book on a specific subject:</div>
+<div>$_("Looking for a book to borrow?  Check out our staff picks, or search for a book on a specific subject:")</div>
      $:render_template("home/custom_ia_carousel", title=_('Books We Love'), key="staff_picks", query='languageSorter:("English")', subject="openlibrary_staff_picks", sorts=["lending___last_browse desc"], limit=18, test=test, compact_mode=True)
     $:render_template("home/categories", test=test)
-    Or, check out our <a href="/collections">special collections</a>.
+    $:_('Or, check out our <a href="/collections">special collections</a>.')

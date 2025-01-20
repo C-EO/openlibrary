@@ -1,20 +1,20 @@
 """Utilities for coverstore"""
 
+import contextlib
 import json
 import mimetypes
 import os
 import random
 import socket
 import string
+from io import IOBase as file
+from urllib.parse import parse_qsl, unquote, unquote_plus, urlsplit, urlunsplit  # type: ignore[attr-defined]
+from urllib.parse import urlencode as real_urlencode
 
 import requests
 import web
-from urllib.parse import urlsplit, urlunsplit, parse_qsl, unquote, unquote_plus  # type: ignore[attr-defined]
-from urllib.parse import urlencode as real_urlencode
 
 from openlibrary.coverstore import config, oldb
-
-from io import IOBase as file
 
 socket.setdefaulttimeout(10.0)
 
@@ -48,7 +48,7 @@ def ol_things(key, value):
             'limit': 10,
         }
         try:
-            d = dict(query=json.dumps(query))
+            d = {"query": json.dumps(query)}
             result = download(get_ol_url() + '/api/things?' + real_urlencode(d))
             result = json.loads(result)
             return result['result']
@@ -120,10 +120,8 @@ def read_file(path, offset, size, chunk=50 * 1024):
 
 
 def rm_f(filename):
-    try:
+    with contextlib.suppress(OSError):
         os.remove(filename)
-    except OSError:
-        pass
 
 
 chars = string.ascii_letters + string.digits

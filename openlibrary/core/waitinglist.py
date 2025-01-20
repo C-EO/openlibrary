@@ -12,15 +12,17 @@ Each waiting instance is represented as a document in the store as follows:
         "last-update": "2013-10-01T06:09:16.577942"
     }
 """
+
 import datetime
 import logging
-import web
-from openlibrary.accounts.model import OpenLibraryAccount
-from . import helpers as h
-from .sendmail import sendmail_with_template
-from . import db
-from . import lending
 
+import web
+
+from openlibrary.accounts.model import OpenLibraryAccount
+
+from . import helpers as h
+from . import lending
+from .sendmail import sendmail_with_template
 
 logger = logging.getLogger("openlibrary.waitinglist")
 
@@ -28,8 +30,7 @@ _wl_api = lending.ia_lending_api
 
 
 def _get_book(identifier):
-    keys = web.ctx.site.things(dict(type='/type/edition', ocaid=identifier))
-    if keys:
+    if keys := web.ctx.site.things({"type": '/type/edition', "ocaid": identifier}):
         return web.ctx.site.get(keys[0])
     else:
         key = "/books/ia:" + identifier
@@ -153,40 +154,6 @@ class WaitingLoan(dict):
             identifier=self['identifier'], userid=self['userid'], **kw
         )
         dict.update(self, kw)
-
-
-class Stats:
-    def get_popular_books(self, limit=10):
-        rows = db.query(
-            "select book_key, count(*) as count"
-            + " from waitingloan"
-            + " group by 1"
-            + " order by 2 desc"
-            + " limit $limit",
-            vars=locals(),
-        ).list()
-        docs = web.ctx.site.get_many([row.book_key for row in rows])
-        docs_dict = {doc.key: doc for doc in docs}
-        for row in rows:
-            row.book = docs_dict.get(row.book_key)
-        return rows
-
-    def get_counts_by_status(self):
-        rows = db.query(
-            "SELECT status, count(*) as count FROM waitingloan group by 1 order by 2"
-        )
-        return rows.list()
-
-    def get_available_waiting_loans(self, offset=0, limit=10):
-        rows = db.query(
-            "SELECT * FROM waitingloan"
-            + " WHERE status='available'"
-            + " ORDER BY expiry desc "
-            + " OFFSET $offset"
-            + " LIMIT $limit",
-            vars=locals(),
-        )
-        return [WaitingLoan(row) for row in rows]
 
 
 def get_waitinglist_for_book(book_key):

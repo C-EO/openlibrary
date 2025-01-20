@@ -1,23 +1,30 @@
 import os
+from datetime import datetime
+
 import pytest
 
-from copy import deepcopy
-
+from infogami.infobase.client import Nothing
 from infogami.infobase.core import Text
-
 from openlibrary.catalog import add_book
 from openlibrary.catalog.add_book import (
-    add_db_name,
+    IndependentlyPublished,
+    PublicationYearTooOld,
+    PublishedInFutureYear,
+    RequiredField,
+    SourceNeedsISBN,
     build_pool,
     editions_matched,
+    find_match,
     isbns_from_record,
     load,
+    load_data,
+    normalize_import_record,
+    should_overwrite_promise_item,
     split_subtitle,
-    RequiredField,
+    validate_record,
 )
-
-from openlibrary.catalog.marc.parse import read_edition
 from openlibrary.catalog.marc.marc_binary import MarcBinary
+from openlibrary.catalog.marc.parse import read_edition
 
 
 def open_test_data(filename):
@@ -87,7 +94,7 @@ bookseller_titles = [
 ]
 
 
-@pytest.mark.parametrize('full_title,title,subtitle', bookseller_titles)
+@pytest.mark.parametrize(('full_title', 'title', 'subtitle'), bookseller_titles)
 def test_split_subtitle(full_title, title, subtitle):
     assert split_subtitle(full_title) == (title, subtitle)
 
@@ -142,7 +149,8 @@ def test_load_test_item(mock_site, add_languages, ia_writeback):
     assert e.ocaid == 'test_item'
     assert e.source_records == ['ia:test_item']
     languages = e.languages
-    assert len(languages) == 1 and languages[0].key == '/languages/eng'
+    assert len(languages) == 1
+    assert languages[0].key == '/languages/eng'
 
     assert reply['work']['status'] == 'created'
     w = mock_site.get(reply['work']['key'])
@@ -291,6 +299,10 @@ def test_load_with_redirected_author(mock_site, add_languages):
 
 
 def test_duplicate_ia_book(mock_site, add_languages, ia_writeback):
+    """
+    Here all fields that are 'used' (i.e. read and contribute to the edition)
+    are the same.
+    """
     rec = {
         'ocaid': 'test_item',
         'source_records': ['ia:test_item'],
@@ -304,16 +316,123 @@ def test_duplicate_ia_book(mock_site, add_languages, ia_writeback):
     assert e.type.key == '/type/edition'
     assert e.source_records == ['ia:test_item']
 
-    rec = {
+    matching_rec = {
         'ocaid': 'test_item',
         'source_records': ['ia:test_item'],
         # Titles MUST match to be considered the same
         'title': 'Test item',
-        'languages': ['fre'],
+        'languages': ['eng'],
+    }
+    reply = load(matching_rec)
+    assert reply['success'] is True
+    assert reply['edition']['status'] == 'matched'
+
+
+def test_matched_edition_with_new_language_in_rec_adds_language(
+    mock_site, add_languages, ia_writeback
+):
+    """
+    When records match, but the record has a new language, the new language
+    should be added to the existing edition, but existing languages should
+    not be duplicated.
+    """
+    rec = {
+        'ocaid': 'test_item',
+        'source_records': ['ia:test_item'],
+        'title': 'Test item',
+        'languages': ['eng'],
     }
     reply = load(rec)
     assert reply['success'] is True
-    assert reply['edition']['status'] == 'matched'
+    assert reply['edition']['status'] == 'created'
+    e = mock_site.get(reply['edition']['key'])
+    assert e.type.key == '/type/edition'
+    assert e.source_records == ['ia:test_item']
+
+    matching_rec = {
+        'ocaid': 'test_item',
+        'source_records': ['ia:test_item'],
+        # Titles MUST match to be considered the same
+        'title': 'Test item',
+        'languages': ['fre', 'eng'],
+    }
+    reply = load(matching_rec)
+    assert reply['success'] is True
+    assert reply['edition']['status'] == 'modified'
+    updated_e = mock_site.get(reply['edition']['key'])
+    updated_languages = [lang['key'] for lang in updated_e.languages]
+    assert updated_languages == ['/languages/eng', '/languages/fre']
+
+
+def test_matched_edition_with_new_language_is_added_even_if_no_existing_language(
+    mock_site, add_languages, ia_writeback
+):
+    """
+    Ensure a new language is added even if the existing edition has no language
+    field.
+    """
+    rec = {
+        'ocaid': 'test_item',
+        'source_records': ['ia:test_item'],
+        'title': 'Test item',
+    }
+    reply = load(rec)
+    assert reply['success'] is True
+    assert reply['edition']['status'] == 'created'
+    e = mock_site.get(reply['edition']['key'])
+    assert e.type.key == '/type/edition'
+    assert e.source_records == ['ia:test_item']
+
+    matching_rec = {
+        'ocaid': 'test_item',
+        'source_records': ['ia:test_item'],
+        # Titles MUST match to be considered the same
+        'title': 'Test item',
+        'languages': ['eng'],
+    }
+    reply = load(matching_rec)
+    assert reply['success'] is True
+    assert reply['edition']['status'] == 'modified'
+    updated_edition = mock_site.get(reply['edition']['key'])
+    updated_languages = [lang['key'] for lang in updated_edition.languages]
+    assert updated_languages == ['/languages/eng']
+
+
+def test_matched_edition_properly_updates_non_language_fields(
+    mock_site, add_languages, ia_writeback
+):
+    """
+    Ensure a new language is added even if the existing edition has no language
+    field.
+    """
+    rec = {
+        'ocaid': 'test_item',
+        'source_records': ['ia:test_item'],
+        'title': 'Test item',
+    }
+    reply = load(rec)
+    assert reply['success'] is True
+    assert reply['edition']['status'] == 'created'
+    e = mock_site.get(reply['edition']['key'])
+    assert e.type.key == '/type/edition'
+    assert e.source_records == ['ia:test_item']
+
+    matching_rec = {
+        'ocaid': 'test_item',
+        'source_records': ['test:1234567890'],  # updated existing field in edition.
+        'title': 'Test item',
+        'lc_classifications': ['PQ2671.A58'],  # new field not present in edition.
+    }
+    reply = load(matching_rec)
+    assert reply['success'] is True
+    assert reply['edition']['status'] == 'modified'
+    updated_edition = mock_site.get(reply['edition']['key'])
+
+    expected_source_records = ['ia:test_item', 'test:1234567890']
+    expected_lc_classifications = ['PQ2671.A58']
+
+    assert expected_source_records == updated_edition.source_records
+    assert expected_lc_classifications == updated_edition.lc_classifications
 
 
 class Test_From_MARC:
@@ -516,24 +635,6 @@ def test_load_multiple(mock_site):
     ekey4 = reply['edition']['key']
 
     assert ekey1 == ekey2 == ekey4
-
-
-def test_add_db_name():
-    authors = [
-        {'name': 'Smith, John'},
-        {'name': 'Smith, John', 'date': '1950'},
-        {'name': 'Smith, John', 'birth_date': '1895', 'death_date': '1964'},
-    ]
-    orig = deepcopy(authors)
-    add_db_name({'authors': authors})
-    orig[0]['db_name'] = orig[0]['name']
-    orig[1]['db_name'] = orig[1]['name'] + ' 1950'
-    orig[2]['db_name'] = orig[2]['name'] + ' 1895-1964'
-    assert authors == orig
-
-    rec = {}
-    add_db_name(rec)
-    assert rec == {}
 
 
 def test_extra_author(mock_site, add_languages):
@@ -939,3 +1040,855 @@ def test_existing_work_with_subtitle(mock_site, add_languages):
     assert reply['authors'][0]['status'] == 'matched'
     e = mock_site.get(reply['edition']['key'])
     assert e.works[0]['key'] == '/works/OL16W'
+
+
+def test_subtitle_gets_split_from_title(mock_site) -> None:
+    """
+    Ensures that if there is a subtitle (designated by a colon) in the title
+    that it is split and put into the subtitle field.
+    """
+    rec = {
+        'source_records': 'non-marc:test',
+        'title': 'Work with a subtitle: not yet split',
+        'publishers': ['Black Spot'],
+        'publish_date': 'Jan 09, 2011',
+        'isbn_10': ['1250144051'],
+    }
+
+    reply = load(rec)
+    assert reply['success'] is True
+    assert reply['edition']['status'] == 'created'
+    assert reply['work']['status'] == 'created'
+    assert reply['work']['key'] == '/works/OL1W'
+    e = mock_site.get(reply['edition']['key'])
+    assert e.works[0]['title'] == "Work with a subtitle"
+    assert isinstance(
+        e.works[0]['subtitle'], Nothing
+    )  # FIX: this is presumably a bug. See `new_work` not assigning 'subtitle'
+    assert e['title'] == "Work with a subtitle"
+    assert e['subtitle'] == "not yet split"
+
+
+# This documents the fact that titles DO NOT have trailing periods stripped (at this point)
+def test_title_with_trailing_period_is_stripped() -> None:
+    rec = {
+        'source_records': 'non-marc:test',
+        'title': 'Title with period.',
+    }
+    normalize_import_record(rec)
+    assert rec['title'] == 'Title with period.'
+
+
+def test_find_match_is_used_when_looking_for_edition_matches(mock_site) -> None:
+    """
+    This tests the case where there is an edition_pool, but `find_quick_match()`
+    finds no matches. This should return a match from `find_threshold_match()`.
+
+    This also indirectly tests `add_book.match.editions_match()`
+    """
+    author = {
+        'type': {'key': '/type/author'},
+        'name': 'John Smith',
+        'key': '/authors/OL20A',
+    }
+    existing_work = {
+        'authors': [
+            {'author': {'key': '/authors/OL20A'}, 'type': {'key': '/type/author_role'}}
+        ],
+        'key': '/works/OL16W',
+        'title': 'Finding Existing',
+        'subtitle': 'sub',
+        'type': {'key': '/type/work'},
+    }
+
+    existing_edition_1 = {
+        'key': '/books/OL16M',
+        'title': 'Finding Existing',
+        'subtitle': 'sub',
+        'publishers': ['Black Spot'],
+        'type': {'key': '/type/edition'},
+        'source_records': ['non-marc:test'],
+        'works': [{'key': '/works/OL16W'}],
+    }
+
+    existing_edition_2 = {
+        'key': '/books/OL17M',
+        'source_records': ['non-marc:test'],
+        'title': 'Finding Existing',
+        'subtitle': 'sub',
+        'publishers': ['Black Spot'],
+        'type': {'key': '/type/edition'},
+        'publish_country': 'usa',
+        'publish_date': 'Jan 09, 2011',
+        'works': [{'key': '/works/OL16W'}],
+    }
+    mock_site.save(author)
+    mock_site.save(existing_work)
+    mock_site.save(existing_edition_1)
+    mock_site.save(existing_edition_2)
+    rec = {
+        'source_records': ['non-marc:test'],
+        'title': 'Finding Existing',
+        'subtitle': 'sub',
+        'authors': [{'name': 'John Smith'}],
+        'publishers': ['Black Spot substring match'],
+        'publish_date': 'Jan 09, 2011',
+        'isbn_10': ['1250144051'],
+        'publish_country': 'usa',
+    }
+    reply = load(rec)
+    assert reply['edition']['key'] == '/books/OL17M'
+    e = mock_site.get(reply['edition']['key'])
+    assert e['key'] == '/books/OL17M'
+
+
+def test_covers_are_added_to_edition(mock_site, monkeypatch) -> None:
+    """Ensures a cover from rec is added to a matched edition."""
+    author = {
+        'type': {'key': '/type/author'},
+        'name': 'John Smith',
+        'key': '/authors/OL20A',
+    }
+
+    existing_work = {
+        'authors': [
+            {'author': {'key': '/authors/OL20A'}, 'type': {'key': '/type/author_role'}}
+        ],
+        'key': '/works/OL16W',
+        'title': 'Covers',
+        'type': {'key': '/type/work'},
+    }
+
+    existing_edition = {
+        'key': '/books/OL16M',
+        'title': 'Covers',
+        'publishers': ['Black Spot'],
+        # TODO: only matches if the date is exact. 2011 != Jan 09, 2011
+        #'publish_date': '2011',
+        'publish_date': 'Jan 09, 2011',
+        'type': {'key': '/type/edition'},
+        'source_records': ['non-marc:test'],
+        'works': [{'key': '/works/OL16W'}],
+    }
+
+    mock_site.save(author)
+    mock_site.save(existing_work)
+    mock_site.save(existing_edition)
+
+    rec = {
+        'source_records': ['non-marc:test'],
+        'title': 'Covers',
+        'authors': [{'name': 'John Smith'}],
+        'publishers': ['Black Spot'],
+        'publish_date': 'Jan 09, 2011',
+        'cover': 'https://www.covers.org/cover.jpg',
+    }
+
+    monkeypatch.setattr(add_book, "add_cover", lambda _, __, account_key: 1234)
+    reply = load(rec)
+
+    assert reply['success'] is True
+    assert reply['edition']['status'] == 'modified'
+    e = mock_site.get(reply['edition']['key'])
+    assert e['covers'] == [1234]
+
+
+def test_add_description_to_work(mock_site) -> None:
+    """
+    Ensure that if an edition has a description, and the associated work does
+    not, that the edition's description is added to the work.
+    """
+    author = {
+        'type': {'key': '/type/author'},
+        'name': 'John Smith',
+        'key': '/authors/OL20A',
+    }
+
+    existing_work = {
+        'authors': [{'author': '/authors/OL20A', 'type': {'key': '/type/author_role'}}],
+        'key': '/works/OL16W',
+        'title': 'Finding Existing Works',
+        'type': {'key': '/type/work'},
+    }
+
+    existing_edition = {
+        'key': '/books/OL16M',
+        'title': 'Finding Existing Works',
+        'publishers': ['Black Spot'],
+        'type': {'key': '/type/edition'},
+        'source_records': ['non-marc:test'],
+        'publish_date': 'Jan 09, 2011',
+        'isbn_10': ['1250144051'],
+        'works': [{'key': '/works/OL16W'}],
+        'description': 'An added description from an existing edition',
+    }
+
+    mock_site.save(author)
+    mock_site.save(existing_work)
+    mock_site.save(existing_edition)
+
+    rec = {
+        'source_records': 'non-marc:test',
+        'title': 'Finding Existing Works',
+        'authors': [{'name': 'John Smith'}],
+        'publishers': ['Black Spot'],
+        'publish_date': 'Jan 09, 2011',
+        'isbn_10': ['1250144051'],
+    }
+
+    reply = load(rec)
+    assert reply['success'] is True
+    assert reply['edition']['status'] == 'matched'
+    assert reply['work']['status'] == 'modified'
+    assert reply['work']['key'] == '/works/OL16W'
+    e = mock_site.get(reply['edition']['key'])
+    assert e.works[0]['key'] == '/works/OL16W'
+    assert e.works[0]['description'] == 'An added description from an existing edition'
+
+
+def test_add_subjects_to_work_deduplicates(mock_site) -> None:
+    """
+    Ensure a rec's subjects, after a case insensitive check, are added to an
+    existing Work if not already present.
+    """
+    author = {
+        'type': {'key': '/type/author'},
+        'name': 'John Smith',
+        'key': '/authors/OL1A',
+    }
+
+    existing_work = {
+        'authors': [{'author': '/authors/OL1A', 'type': {'key': '/type/author_role'}}],
+        'key': '/works/OL1W',
+        'subjects': ['granite', 'GRANITE', 'Straße', 'ΠΑΡΆΔΕΙΣΟΣ'],
+        'title': 'Some Title',
+        'type': {'key': '/type/work'},
+    }
+
+    existing_edition = {
+        'key': '/books/OL1M',
+        'title': 'Some Title',
+        'publishers': ['Black Spot'],
+        'type': {'key': '/type/edition'},
+        'source_records': ['non-marc:test'],
+        'publish_date': 'Jan 09, 2011',
+        'isbn_10': ['1250144051'],
+        'works': [{'key': '/works/OL1W'}],
+    }
+
+    mock_site.save(author)
+    mock_site.save(existing_work)
+    mock_site.save(existing_edition)
+
+    rec = {
+        'authors': [{'name': 'John Smith'}],
+        'isbn_10': ['1250144051'],
+        'publish_date': 'Jan 09, 2011',
+        'publishers': ['Black Spot'],
+        'source_records': 'non-marc:test',
+        'subjects': [
+            'granite',
+            'Granite',
+            'SANDSTONE',
+            'sandstone',
+            'strasse',
+            'παράδεισος',
+        ],
+        'title': 'Some Title',
+    }
+
+    reply = load(rec)
+    assert reply['success'] is True
+    assert reply['edition']['status'] == 'matched'
+    assert reply['work']['status'] == 'modified'
+    assert reply['work']['key'] == '/works/OL1W'
+    w = mock_site.get(reply['work']['key'])
+
+    def get_casefold(item_list: list[str]):
+        return [item.casefold() for item in item_list]
+
+    expected = ['granite', 'Straße', 'ΠΑΡΆΔΕΙΣΟΣ', 'sandstone']
+    got = w.subjects
+    assert get_casefold(got) == get_casefold(expected)
+
+
+def test_add_identifiers_to_edition(mock_site) -> None:
+    """
+    Ensure a rec's identifiers that are not present in a matched edition are
+    added to that matched edition.
+    """
+    author = {
+        'type': {'key': '/type/author'},
+        'name': 'John Smith',
+        'key': '/authors/OL20A',
+    }
+
+    existing_work = {
+        'authors': [{'author': '/authors/OL20A', 'type': {'key': '/type/author_role'}}],
+        'key': '/works/OL19W',
+        'title': 'Finding Existing Works',
+        'type': {'key': '/type/work'},
+    }
+
+    existing_edition = {
+        'key': '/books/OL19M',
+        'title': 'Finding Existing Works',
+        'publishers': ['Black Spot'],
+        'type': {'key': '/type/edition'},
+        'source_records': ['non-marc:test'],
+        'publish_date': 'Jan 09, 2011',
+        'isbn_10': ['1250144051'],
+        'works': [{'key': '/works/OL19W'}],
+    }
+
+    mock_site.save(author)
+    mock_site.save(existing_work)
+    mock_site.save(existing_edition)
+
+    rec = {
+        'source_records': 'non-marc:test',
+        'title': 'Finding Existing Works',
+        'authors': [{'name': 'John Smith'}],
+        'publishers': ['Black Spot'],
+        'publish_date': 'Jan 09, 2011',
+        'isbn_10': ['1250144051'],
+        'identifiers': {'goodreads': ['1234'], 'librarything': ['5678']},
+    }
+
+    reply = load(rec)
+    assert reply['success'] is True
+    assert reply['edition']['status'] == 'modified'
+    assert reply['work']['status'] == 'matched'
+    assert reply['work']['key'] == '/works/OL19W'
+    e = mock_site.get(reply['edition']['key'])
+    assert e.works[0]['key'] == '/works/OL19W'
+    assert e.identifiers._data == {'goodreads': ['1234'], 'librarything': ['5678']}
+
+
+def test_adding_list_field_items_to_edition_deduplicates_input(mock_site) -> None:
+    """
+    Ensure a rec's edition_list_fields that are not present in a matched
+    edition are added to that matched edition.
+    """
+    author = {
+        'type': {'key': '/type/author'},
+        'name': 'John Smith',
+        'key': '/authors/OL1A',
+    }
+
+    existing_work = {
+        'authors': [{'author': '/authors/OL1A', 'type': {'key': '/type/author_role'}}],
+        'key': '/works/OL1W',
+        'title': 'Some Title',
+        'type': {'key': '/type/work'},
+    }
+
+    existing_edition = {
+        'isbn_10': ['1250144051'],
+        'key': '/books/OL1M',
+        'lccn': ['agr25000003'],
+        'publish_date': 'Jan 09, 2011',
+        'publishers': ['Black Spot'],
+        'source_records': ['non-marc:test'],
+        'title': 'Some Title',
+        'type': {'key': '/type/edition'},
+        'works': [{'key': '/works/OL1W'}],
+    }
+
+    mock_site.save(author)
+    mock_site.save(existing_work)
+    mock_site.save(existing_edition)
+
+    rec = {
+        'authors': [{'name': 'John Smith'}],
+        'isbn_10': ['1250144051'],
+        'lccn': ['AGR25000003', 'AGR25-3'],
+        'publish_date': 'Jan 09, 2011',
+        'publishers': ['Black Spot', 'Second Publisher'],
+        'source_records': ['NON-MARC:TEST', 'ia:someid'],
+        'title': 'Some Title',
+    }
+
+    reply = load(rec)
+    assert reply['success'] is True
+    assert reply['edition']['status'] == 'modified'
+    assert reply['work']['status'] == 'matched'
+    assert reply['work']['key'] == '/works/OL1W'
+    e = mock_site.get(reply['edition']['key'])
+    assert e.works[0]['key'] == '/works/OL1W'
+    assert e.lccn == ['agr25000003']
+    assert e.source_records == ['non-marc:test', 'ia:someid']
+
+
+@pytest.mark.parametrize(
+    ('name', 'rec', 'error'),
+    [
+        (
+            "Books prior to 1400 CANNOT be imported if from a bookseller requiring additional validation",
+            {
+                'title': 'a book',
+                'source_records': ['amazon:123'],
+                'publish_date': '1399',
+                'isbn_10': ['1234567890'],
+            },
+            PublicationYearTooOld,
+        ),
+        (
+            "Books published on or after 1400 CE+ can be imported from any source",
+            {
+                'title': 'a book',
+                'source_records': ['amazon:123'],
+                'publish_date': '1400',
+                'isbn_10': ['1234567890'],
+            },
+            None,
+        ),
+        (
+            "Trying to import a book from a future year raises an error",
+            {'title': 'a book', 'source_records': ['ia:ocaid'], 'publish_date': '3000'},
+            PublishedInFutureYear,
+        ),
+        (
+            "Independently published books CANNOT be imported",
+            {
+                'title': 'a book',
+                'source_records': ['ia:ocaid'],
+                'publishers': ['Independently Published'],
+            },
+            IndependentlyPublished,
+        ),
+        (
+            "Non-independently published books can be imported",
+            {
+                'title': 'a book',
+                'source_records': ['ia:ocaid'],
+                'publishers': ['Best Publisher'],
+            },
+            None,
+        ),
+        (
+            "Import sources that require an ISBN CANNOT be imported without an ISBN",
+            {'title': 'a book', 'source_records': ['amazon:amazon_id'], 'isbn_10': []},
+            SourceNeedsISBN,
+        ),
+        (
+            "Can import sources that require an ISBN and have ISBN",
+            {
+                'title': 'a book',
+                'source_records': ['amazon:amazon_id'],
+                'isbn_10': ['1234567890'],
+            },
+            None,
+        ),
+        (
+            "Can import from sources that don't require an ISBN",
+            {'title': 'a book', 'source_records': ['ia:wheeee'], 'isbn_10': []},
+            None,
+        ),
+    ],
+)
+def test_validate_record(name, rec, error) -> None:
+    if error:
+        with pytest.raises(error):
+            validate_record(rec)
+    else:
+        assert validate_record(rec) is None, f"Test failed: {name}"  # type: ignore [func-returns-value]
+
+
+def test_reimport_updates_edition_and_work_description(mock_site) -> None:
+    author = {
+        'type': {'key': '/type/author'},
+        'name': 'John Smith',
+        'key': '/authors/OL1A',
+    }
+
+    existing_work = {
+        'authors': [{'author': '/authors/OL1A', 'type': {'key': '/type/author_role'}}],
+        'key': '/works/OL1W',
+        'title': 'A Good Book',
+        'type': {'key': '/type/work'},
+    }
+
+    existing_edition = {
+        'key': '/books/OL1M',
+        'title': 'A Good Book',
+        'publishers': ['Black Spot'],
+        'type': {'key': '/type/edition'},
+        'source_records': ['ia:someocaid'],
+        'publish_date': 'Jan 09, 2011',
+        'isbn_10': ['1234567890'],
+        'works': [{'key': '/works/OL1W'}],
+    }
+
+    mock_site.save(author)
+    mock_site.save(existing_work)
+    mock_site.save(existing_edition)
+
+    rec = {
+        'source_records': 'ia:someocaid',
+        'title': 'A Good Book',
+        'authors': [{'name': 'John Smith'}],
+        'publishers': ['Black Spot'],
+        'publish_date': 'Jan 09, 2011',
+        'isbn_10': ['1234567890'],
+        'description': 'A genuinely enjoyable read.',
+    }
+
+    reply = load(rec)
+    assert reply['success'] is True
+    assert reply['edition']['status'] == 'modified'
+    assert reply['work']['status'] == 'modified'
+    assert reply['work']['key'] == '/works/OL1W'
+    edition = mock_site.get(reply['edition']['key'])
+    work = mock_site.get(reply['work']['key'])
+    assert edition.description == "A genuinely enjoyable read."
+    assert work.description == "A genuinely enjoyable read."
+
+
+@pytest.mark.parametrize(
+    ('name', 'edition', 'marc', 'expected'),
+    [
+        (
+            "Overwrites revision 1 promise items with MARC data",
+            {'revision': 1, 'source_records': ['promise:bwb_daily_pallets_2022-03-17']},
+            True,
+            True,
+        ),
+        (
+            "Doesn't overwrite rev 1 promise items WITHOUT MARC data",
+            {'revision': 1, 'source_records': ['promise:bwb_daily_pallets_2022-03-17']},
+            False,
+            False,
+        ),
+        (
+            "Doesn't overwrite non-revision 1 promise items",
+            {'revision': 2, 'source_records': ['promise:bwb_daily_pallets_2022-03-17']},
+            True,
+            False,
+        ),
+        (
+            "Doesn't overwrite revision 1 NON-promise items",
+            {'revision': 1, 'source_records': ['ia:test']},
+            True,
+            False,
+        ),
+        (
+            "Can handle editions with an empty source record",
+            {'revision': 1, 'source_records': ['']},
+            True,
+            False,
+        ),
+        ("Can handle editions without a source record", {'revision': 1}, True, False),
+        (
+            "Can handle editions without a revision",
+            {'source_records': ['promise:bwb_daily_pallets_2022-03-17']},
+            True,
+            False,
+        ),
+    ],
+)
+def test_overwrite_if_rev1_promise_item(name, edition, marc, expected) -> None:
+    """
+    Specifically unit test the function that determines if a promise
+    item should be overwritten.
+    """
+    result = should_overwrite_promise_item(edition=edition, from_marc_record=marc)
+    assert (
+        result == expected
+    ), f"Test {name} failed. Expected {expected}, but got {result}"
+
+
+@pytest.fixture
+def setup_load_data(mock_site):
+    existing_author = {
+        'key': '/authors/OL1A',
+        'name': 'John Smith',
+        'type': {'key': '/type/author'},
+    }
+
+    existing_work = {
+        'authors': [{'author': '/authors/OL1A', 'type': {'key': '/type/author_role'}}],
+        'key': '/works/OL1W',
+        'title': 'Finding Existing Works',
+        'type': {'key': '/type/work'},
+    }
+
+    existing_edition = {
+        'isbn_10': ['1234567890'],
+        'key': '/books/OL1M',
+        'publish_date': 'Jan 1st, 3000',
+        'publishers': ['BOOK BOOK BOOK'],
+        'source_records': ['promise:bwb_daily_pallets_2022-03-17'],
+        'title': 'Originally A Promise Item',
+        'type': {'key': '/type/edition'},
+        'works': [{'key': '/works/OL1W'}],
+    }
+
+    incoming_rec = {
+        'authors': [{'name': 'John Smith'}],
+        'description': 'A really fun book.',
+        'dewey_decimal_class': ['853.92'],
+        'identifiers': {'goodreads': ['1234'], 'librarything': ['5678']},
+        'isbn_10': ['1234567890'],
+        'ocaid': 'newlyscannedpromiseitem',
+        'publish_country': 'fr',
+        'publish_date': '2017',
+        'publish_places': ['Paris'],
+        'publishers': ['Gallimard'],
+        'series': ['Folio, Policier : roman noir -- 820'],
+        'source_records': ['ia:newlyscannedpromiseitem'],
+        'title': 'Originally A Promise Item',
+        'translated_from': ['yid'],
+    }
+
+    mock_site.save(existing_author)
+    mock_site.save(existing_work)
+    mock_site.save(existing_edition)
+
+    return incoming_rec
+
+
+class TestLoadDataWithARev1PromiseItem:
+    """
+    Test the process of overwriting a rev1 promise item by passing it, and
+    an incoming record with MARC data, to load_data.
+    """
+
+    def test_passing_edition_to_load_data_overwrites_edition_with_rec_data(
+        self, mock_site, add_languages, ia_writeback, setup_load_data
+    ) -> None:
+        rec: dict = setup_load_data
+        edition = mock_site.get('/books/OL1M')
+
+        reply = load_data(rec=rec, existing_edition=edition)
+        assert reply['edition']['status'] == 'modified'
+        assert reply['success'] is True
+        assert reply['work']['key'] == '/works/OL1W'
+        assert reply['work']['status'] == 'matched'
+
+        edition = mock_site.get(reply['edition']['key'])
+        assert edition.dewey_decimal_class == ['853.92']
+        assert edition.publish_date == '2017'
+        assert edition.publish_places == ['Paris']
+        assert edition.publishers == ['Gallimard']
+        assert edition.series == ['Folio, Policier : roman noir -- 820']
+        assert edition.source_records == [
+            'promise:bwb_daily_pallets_2022-03-17',
+            'ia:newlyscannedpromiseitem',
+        ]
+        assert edition.works[0]['key'] == '/works/OL1W'
+
+
+class TestNormalizeImportRecord:
+    @pytest.mark.parametrize(
+        ('year', 'expected'),
+        [
+            ("2000-11-11", True),
+            (str(datetime.now().year), True),
+            (str(datetime.now().year + 1), False),
+            ("9999-01-01", False),
+        ],
+    )
+    def test_future_publication_dates_are_deleted(self, year, expected):
+        """It should be impossible to import books publish_date in a future year."""
+        rec = {
+            'title': 'test book',
+            'source_records': ['ia:blob'],
+            'publish_date': year,
+        }
+        normalize_import_record(rec=rec)
+        result = 'publish_date' in rec
+        assert result == expected
+
+    @pytest.mark.parametrize(
+        ('rec', 'expected'),
+        [
+            (
+                {
+                    'title': 'first title',
+                    'source_records': ['ia:someid'],
+                    'publishers': ['????'],
+                    'authors': [{'name': 'an author'}],
+                    'publish_date': '2000',
+                },
+                {
+                    'title': 'first title',
+                    'source_records': ['ia:someid'],
+                    'authors': [{'name': 'an author'}],
+                    'publish_date': '2000',
+                },
+            ),
+            (
+                {
+                    'title': 'second title',
+                    'source_records': ['ia:someid'],
+                    'publishers': ['a publisher'],
+                    'authors': [{'name': 'an author'}],
+                    'publish_date': '2000',
+                },
+                {
+                    'title': 'second title',
+                    'source_records': ['ia:someid'],
+                    'publishers': ['a publisher'],
+                    'authors': [{'name': 'an author'}],
+                    'publish_date': '2000',
+                },
+            ),
+        ],
+    )
+    def test_dummy_data_to_satisfy_parse_data_is_removed(self, rec, expected):
+        normalize_import_record(rec=rec)
+        assert rec == expected
+
+    @pytest.mark.parametrize(
+        ('rec', 'expected'),
+        [
+            (
+                # 1900 publication from non AMZ/BWB is okay.
+                {
+                    'title': 'a title',
+                    'source_records': ['ia:someid'],
+                    'publishers': ['a publisher'],
+                    'authors': [{'name': 'an author'}],
+                    'publish_date': '1900',
+                },
+                {
+                    'title': 'a title',
+                    'source_records': ['ia:someid'],
+                    'publishers': ['a publisher'],
+                    'authors': [{'name': 'an author'}],
+                    'publish_date': '1900',
+                },
+            ),
+            (
+                # 1900 publication from AMZ disappears.
+                {
+                    'title': 'a title',
+                    'source_records': ['amazon:someid'],
+                    'publishers': ['a publisher'],
+                    'authors': [{'name': 'an author'}],
+                    'publish_date': '1900',
+                },
+                {
+                    'title': 'a title',
+                    'source_records': ['amazon:someid'],
+                    'publishers': ['a publisher'],
+                    'authors': [{'name': 'an author'}],
+                },
+            ),
+            (
+                # 1900 publication from bwb item disappears.
+                {
+                    'title': 'a title',
+                    'source_records': ['bwb:someid'],
+                    'publishers': ['a publisher'],
+                    'authors': [{'name': 'an author'}],
+                    'publish_date': '1900',
+                },
+                {
+                    'title': 'a title',
+                    'source_records': ['bwb:someid'],
+                    'publishers': ['a publisher'],
+                    'authors': [{'name': 'an author'}],
+                },
+            ),
+            (
+                # 1900 publication from promise item disappears.
+                {
+                    'title': 'a title',
+                    'source_records': ['promise:someid'],
+                    'publishers': ['a publisher'],
+                    'authors': [{'name': 'an author'}],
+                    'publish_date': 'January 1, 1900',
+                },
+                {
+                    'title': 'a title',
+                    'source_records': ['promise:someid'],
+                    'publishers': ['a publisher'],
+                    'authors': [{'name': 'an author'}],
+                },
+            ),
+            (
+                # An otherwise valid date from AMZ is okay.
+                {
+                    'title': 'a title',
+                    'source_records': ['amazon:someid'],
+                    'publishers': ['a publisher'],
+                    'authors': [{'name': 'an author'}],
+                    'publish_date': 'January 2, 1900',
+                },
+                {
+                    'title': 'a title',
+                    'source_records': ['amazon:someid'],
+                    'publishers': ['a publisher'],
+                    'authors': [{'name': 'an author'}],
+                    'publish_date': 'January 2, 1900',
+                },
+            ),
+            (
+                # An otherwise valid date from promise is okay.
+                {
+                    'title': 'a title',
+                    'source_records': ['promise:someid'],
+                    'publishers': ['a publisher'],
+                    'authors': [{'name': 'an author'}],
+                    'publish_date': 'January 2, 1900',
+                },
+                {
+                    'title': 'a title',
+                    'source_records': ['promise:someid'],
+                    'publishers': ['a publisher'],
+                    'authors': [{'name': 'an author'}],
+                    'publish_date': 'January 2, 1900',
+                },
+            ),
+            (
+                # Handle records without publish_date.
+                {
+                    'title': 'a title',
+                    'source_records': ['promise:someid'],
+                    'publishers': ['a publisher'],
+                    'authors': [{'name': 'an author'}],
+                },
+                {
+                    'title': 'a title',
+                    'source_records': ['promise:someid'],
+                    'publishers': ['a publisher'],
+                    'authors': [{'name': 'an author'}],
+                },
+            ),
+        ],
+    )
+    def test_year_1900_removed_from_amz_and_bwb_promise_items(self, rec, expected):
+        """
+        A few import sources (e.g. promise items, BWB, and Amazon) have `publish_date`
+        values that are known to be inaccurate, so those `publish_date` values are
+        removed.
+        """
+        normalize_import_record(rec=rec)
+        assert rec == expected
+
+
+def test_find_match_title_only_promiseitem_against_noisbn_marc(mock_site):
+    # An existing light title + ISBN only record
+    existing_edition = {
+        'key': '/books/OL113M',
+        # NO author
+        # NO date
+        # NO publisher
+        'title': 'Just A Title',
+        'isbn_13': ['9780000000002'],
+        'source_records': ['promise:someid'],
+        'type': {'key': '/type/edition'},
+    }
+    marc_import = {
+        'authors': [{'name': 'Bob Smith'}],
+        'publish_date': '1913',
+        'publishers': ['Early Editions'],
+        'title': 'Just A Title',
+        'source_records': ['marc:somelibrary/some_marc.mrc'],
+    }
+    mock_site.save(existing_edition)
+    result = find_match(marc_import, {'title': [existing_edition['key']]})
+    assert result != '/books/OL113M'
+    assert result is None

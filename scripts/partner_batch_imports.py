@@ -10,18 +10,19 @@ To Run:
 PYTHONPATH=. python ./scripts/partner_batch_imports.py /olsystem/etc/openlibrary.yml
 """
 
-from collections.abc import Mapping
 import datetime
 import logging
 import os
 import re
-from typing import TypedDict, cast
+from collections.abc import Mapping
+from typing import cast
 
 import requests
 
-from infogami import config  # noqa: F401
+from infogami import config  # noqa: F401 side effects may be needed
 from openlibrary.config import load_config
 from openlibrary.core.imports import Batch
+from openlibrary.plugins.openlibrary.code import setup_requests
 from scripts.solr_builder.solr_builder.fn_to_cli import FnToCLI
 
 logger = logging.getLogger("openlibrary.importer.bwb")
@@ -82,6 +83,8 @@ SCHEMA_URL = (
     "/openlibrary-client/master/olclient/schemata/import.schema.json"
 )
 
+required_fields: list[str] = []
+
 
 class Biblio:
     ACTIVE_FIELDS = [
@@ -92,22 +95,21 @@ class Biblio:
         'weight',
         'authors',
         'lc_classifications',
+        'number_of_pages',
         'pagination',
         'languages',
         'subjects',
         'source_records',
+        'lccn',
+        'identifiers',
+        'dewey_decimal_class',
     ]
     INACTIVE_FIELDS = [
         "copyright",
-        "issn",
-        "doi",
-        "lccn",
-        "dewey",
         "length",
         "width",
         "height",
     ]
-    REQUIRED_FIELDS = requests.get(SCHEMA_URL).json()['required']
 
     NONBOOK = """A2 AA AB AJ AVI AZ BK BM C3 CD CE CF CR CRM CRW CX D3 DA DD DF DI DL
     DO DR DRM DRW DS DV EC FC FI FM FR FZ GB GC GM GR H3 H5 L3 L5 LP MAC MC MF MG MH ML
@@ -116,17 +118,29 @@ class Biblio:
     VU VY VZ WA WC WI WL WM WP WT WX XL XZ ZF ZZ""".split()
 
     def __init__(self, data):
+        self.REQUIRED_FIELDS = required_fields
+
+        self.primary_format = data[6]
+        self.product_type = data[121]
+        assert (
+            not self.isnonbook()
+        ), f"{self.primary_format}/{self.product_type} is NONBOOK"
+
         self.isbn = data[124]
         self.source_id = f'bwb:{self.isbn}'
         self.isbn_13 = [self.isbn]
         self.title = data[10]
-        self.primary_format = data[6]
-        self.publish_date = data[20][:4]  # YYYY, YYYYMMDD
+        self.publish_date = data[20][:4]  # YYYY
         self.publishers = [data[135]]
         self.weight = data[39]
         self.authors = self.contributors(data)
         self.lc_classifications = [data[147]] if data[147] else []
-        self.pagination = data[36]
+        if data[36] and data[36].isnumeric():
+            self.number_of_pages = int(data[36])
+            self.pagination = None
+        else:
+            self.number_of_pages = None
+            self.pagination = data[36]
         self.languages = [data[37].lower()]
         self.source_records = [self.source_id]
         self.subjects = [
@@ -137,12 +151,16 @@ class Biblio:
             if s
         ]
 
+        self.identifiers = {
+            **({'issn': [data[54]]} if data[54] else {}),
+            **({'doi': [data[145]]} if data[145] else {}),
+        }
+
+        self.lccn = [data[146]] if data[146] else []
+        self.dewey_decimal_class = [data[49]] if data[49] else []
+
         # Inactive fields
         self.copyright = data[19]
-        self.issn = data[54]
-        self.doi = data[145]
-        self.lccn = data[146]
-        self.dewey = data[49]
         # physical_dimensions
         # e.g. "5.4 x 4.7 x 0.2 inches"
         self.length, self.width, self.height = data[40:43]
@@ -150,9 +168,6 @@ class Biblio:
         # Assert importable
         for field in self.REQUIRED_FIELDS + ['isbn_13']:
             assert getattr(self, field), field
-        assert (
-            self.primary_format not in self.NONBOOK
-        ), f"{self.primary_format} is NONBOOK"
 
     @staticmethod
     def contributors(data):
@@ -173,6 +188,9 @@ class Biblio:
         # form list of author dicts
         authors = [make_author(*c) for c in contributors if c[0]]
         return authors
+
+    def isnonbook(self):
+        return self.primary_format in self.NONBOOK or 'OTH' in self.product_type
 
     def json(self):
         return {
@@ -298,7 +316,11 @@ def batch_import(path, batch, batch_size=5000):
 
 
 def main(ol_config: str, batch_path: str):
+    global required_fields
+
     load_config(ol_config)
+    setup_requests()
+    required_fields = requests.get(SCHEMA_URL).json()['required']
 
     # Partner data is offset ~15 days from start of month
     date = datetime.date.today() - datetime.timedelta(days=15)

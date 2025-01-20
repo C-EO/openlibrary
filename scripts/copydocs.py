@@ -1,11 +1,10 @@
 #!/usr/bin/env python
 from __future__ import annotations
-from collections import namedtuple
 
 import json
 import os
 import sys
-from typing import Union
+from collections import namedtuple
 from collections.abc import Iterator
 
 import web
@@ -13,9 +12,9 @@ import web
 from scripts.solr_builder.solr_builder.fn_to_cli import FnToCLI
 
 sys.path.insert(0, ".")  # Enable scripts/copydocs.py to be run.
-import scripts._init_path  # noqa: E402,F401
+import scripts._init_path
 import scripts.tests.test_copydocs
-from openlibrary.api import OpenLibrary, marshal  # noqa: E402
+from openlibrary.api import OpenLibrary, marshal
 
 __version__ = "0.2"
 
@@ -72,9 +71,8 @@ class Disk:
 
             try:
                 print("writing", path)
-                f = open(path, "w")
-                f.write(text)
-                f.close()
+                with open(path, "w") as f:
+                    f.write(text)
             except OSError:
                 print("failed", path)
 
@@ -127,13 +125,15 @@ def get_references(doc, result=None):
         if 'key' in doc and len(doc) == 1:
             result.append(doc['key'])
 
-        for k, v in doc.items():
+        for v in doc.values():
             get_references(v, result)
     return result
 
 
 class KeyVersionPair(namedtuple('KeyVersionPair', 'key version')):
     """Helper class to store uri's like /works/OL1W?v=2"""
+
+    __slots__ = ()
 
     @staticmethod
     def from_uri(uri: str) -> KeyVersionPair:
@@ -195,18 +195,11 @@ def copy(
         return docs
 
     def fetch(uris: list[str]) -> list[dict | web.storage]:
-        docs: list = []
-
         # The remaining code relies on cache being a dict.
         if not isinstance(cache, dict):
-            return docs
-
-        key_pairs = list(map(KeyVersionPair.from_uri, uris))
-
-        for pair in key_pairs:
-            if pair.key in cache:
-                docs.append(cache[pair.key])
-
+            return []
+        key_pairs = [KeyVersionPair.from_uri(uri) for uri in uris]
+        docs = [cache[pair.key] for pair in key_pairs if pair.key in cache]
         key_pairs = [pair for pair in key_pairs if pair.to_uri() not in cache]
 
         unversioned_keys = [pair.key for pair in key_pairs if pair.version is None]
@@ -281,8 +274,8 @@ def copy(
     for group in web.group(docs, 50):
         try:
             print(dest.save_many(group, comment=comment))
-        except BaseException:
-            print("Something went wrong saving this batch!")
+        except BaseException as e:
+            print(f"Something went wrong saving this batch! {e}")
     saved.update(keys)
 
 
@@ -307,9 +300,7 @@ def copy_list(src, dest, list_key, comment):
         return d['entries']  # [x['url'] for x in d['entries']]
 
     def add_seed(seed):
-        if seed['type'] == 'edition':
-            keys.add(seed['url'])
-        elif seed['type'] == 'work':
+        if seed['type'] in ('edition', 'work'):
             keys.add(seed['url'])
         elif seed['type'] == 'subject':
             doc = jsonget(seed['url'] + '.json')
@@ -364,10 +355,10 @@ def main(
 
     # Mypy doesn't handle union-ing types across if statements -_-
     # https://github.com/python/mypy/issues/6233
-    src_ol: Union[Disk, OpenLibrary] = (
+    src_ol: Disk | OpenLibrary = (
         OpenLibrary(src) if src.startswith("http://") else Disk(src)
     )
-    dest_ol: Union[Disk, OpenLibrary] = (
+    dest_ol: Disk | OpenLibrary = (
         OpenLibrary(dest) if dest.startswith("http://") else Disk(dest)
     )
 

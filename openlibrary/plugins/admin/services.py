@@ -4,9 +4,9 @@ for the admin panel
 """
 
 import re
-import requests
 from collections import defaultdict
 
+import requests
 from bs4 import BeautifulSoup
 
 
@@ -54,10 +54,8 @@ class Service:
         self.nagios = nagios.get_service_status(name)
 
     def __repr__(self):
-        return "Service(name = '{}', node = '{}', logs = '{}')".format(
-            self.name,
-            self.node,
-            self.logs,
+        return (
+            f"Service(name = '{self.name}', node = '{self.node}', logs = '{self.logs}')"
         )
 
 

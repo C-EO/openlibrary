@@ -1,9 +1,12 @@
-from openlibrary.catalog.marc.marc_xml import MarcXml
-from openlibrary.catalog.marc.marc_binary import MarcBinary
-from openlibrary.catalog.marc.get_subjects import four_types, read_subjects
-from lxml import etree
-import os
+from pathlib import Path
+
+import lxml.etree
 import pytest
+from lxml import etree
+
+from openlibrary.catalog.marc.get_subjects import four_types, read_subjects
+from openlibrary.catalog.marc.marc_binary import MarcBinary
+from openlibrary.catalog.marc.marc_xml import MarcXml
 
 xml_samples = [
     ('bijouorannualofl1828cole', {}),
@@ -39,7 +42,7 @@ xml_samples = [
         {'place': {'Spain': 1}, 'subject': {'Courts and court life': 1, 'History': 1}},
     ),
     (
-        '39002054008678.yale.edu',
+        '39002054008678_yale_edu',
         {
             'place': {'Ontario': 2},
             'subject': {'Description and travel': 1, 'History': 1},
@@ -119,7 +122,7 @@ bin_samples = [
     ('collingswood_bad_008.mrc', {'subject': {'War games': 1, 'Battles': 1}}),
     (
         'histoirereligieu05cr_meta.mrc',
-        {'org': {'Jesuits': 4}, 'subject': {'Influence': 1, 'History': 1}},
+        {'org': {'Jesuits': 2}, 'subject': {'Influence': 1, 'History': 1}},
     ),
     (
         'ithaca_college_75002321.mrc',
@@ -215,7 +218,6 @@ bin_samples = [
         'wrapped_lines.mrc',
         {
             'org': {
-                'United States': 1,
                 'United States. Congress. House. Committee on Foreign Affairs': 1,
             },
             'place': {'United States': 1},
@@ -235,25 +237,25 @@ bin_samples = [
 ]
 
 record_tag = '{http://www.loc.gov/MARC21/slim}record'
+TEST_DATA = Path(__file__).with_name('test_data')
 
 
 class TestSubjects:
-    @pytest.mark.parametrize('item,expected', xml_samples)
+    @pytest.mark.parametrize(('item', 'expected'), xml_samples)
     def test_subjects_xml(self, item, expected):
-        filename = (
-            os.path.dirname(__file__) + '/test_data/xml_input/' + item + '_marc.xml'
-        )
-        element = etree.parse(filename).getroot()
+        filepath = TEST_DATA / 'xml_input' / f'{item}_marc.xml'
+        element = etree.parse(
+            filepath, parser=lxml.etree.XMLParser(resolve_entities=False)
+        ).getroot()
         if element.tag != record_tag and element[0].tag == record_tag:
             element = element[0]
         rec = MarcXml(element)
         assert read_subjects(rec) == expected
 
-    @pytest.mark.parametrize('item,expected', bin_samples)
+    @pytest.mark.parametrize(('item', 'expected'), bin_samples)
     def test_subjects_bin(self, item, expected):
-        filename = os.path.dirname(__file__) + '/test_data/bin_input/' + item
-        with open(filename, mode='rb') as f:
-            rec = MarcBinary(f.read())
+        filepath = TEST_DATA / 'bin_input' / item
+        rec = MarcBinary(filepath.read_bytes())
         assert read_subjects(rec) == expected
 
     def test_four_types_combine(self):

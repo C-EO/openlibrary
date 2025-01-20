@@ -1,23 +1,20 @@
-import jquery from 'jquery';
 import sinon from 'sinon';
 import * as testData from './html-test-data';
 import { htmlquote } from '../../../openlibrary/plugins/openlibrary/js/jsdef';
-import jQueryRepeat from '../../../openlibrary/plugins/openlibrary/js/jquery.repeat';
+import { init } from '../../../openlibrary/plugins/openlibrary/js/jquery.repeat';
 
 let sandbox;
 
 beforeEach(() => {
     sandbox = sinon.createSandbox();
-    global.$ = jquery;
     global.htmlquote = htmlquote;
     // htmlquote is used inside an eval expression (yuck) so is an implied dependency
     sandbox.stub(global, 'htmlquote').callsFake(htmlquote);
-    sandbox.stub(global, '$').callsFake(jquery);
 });
 
 test('identifiers of repeated elements are never the same.', () => {
     // setup Query repeat
-    jQueryRepeat(global.$);
+    init();
     // setup the HTML
     $(document.body).html(testData.editionIdentifiersSample);
     // turn on jQuery repeat

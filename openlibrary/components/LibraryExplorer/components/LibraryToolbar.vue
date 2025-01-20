@@ -130,6 +130,12 @@
                   <label>
                     <input type="radio" v-model="sortState.order" value="old">Oldest
                   </label>
+                  <label>
+                    <input type="radio" v-model="sortState.order" value="rating">Top Rated
+                  </label>
+                  <label>
+                    <input type="radio" v-model="sortState.order" value="readinglog">Reading Log
+                  </label>
                   <label title="I.e. Classification order. Note some books maybe missing when sorting by shelf order–we're working on it.">
                     <input type="radio" v-model="sortState.order" :value="`${settingsState.selectedClassification.field}_sort asc`" >Shelf Order
                   </label>
@@ -195,11 +201,11 @@
 
 <script>
 import lucenerQueryParser from 'lucene-query-parser';
-import SettingsIcon from './icons/SettingsIcon';
-import FilterIcon from './icons/FilterIcon';
-import SortIcon from './icons/SortIcon';
-import FeedbackIcon from './icons/FeedbackIcon';
-import CONFIGS from '../configs';
+import SettingsIcon from './icons/SettingsIcon.vue';
+import FilterIcon from './icons/FilterIcon.vue';
+import SortIcon from './icons/SortIcon.vue';
+import FeedbackIcon from './icons/FeedbackIcon.vue';
+import CONFIGS from '../../configs';
 import Multiselect from 'vue-multiselect';
 
 export default {

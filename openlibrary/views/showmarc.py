@@ -1,12 +1,13 @@
 """
 Hook to show MARC or other source record details in Open Library.
 """
-from .. import app
 
-import web
 import re
 
 import requests
+import web
+
+from .. import app
 
 
 class old_show_marc(app.view):
@@ -87,6 +88,13 @@ class show_bwb(app.view):
         return app.render_template("showbwb", isbn)
 
 
+class show_google_books(app.view):
+    path = "/show-records/google_books:(.*)"
+
+    def GET(self, isbn):
+        return app.render_template("showgoogle_books", isbn)
+
+
 re_bad_meta_mrc = re.compile(r'^([^/]+)_meta\.mrc$')
 re_lc_sanfranpl = re.compile(r'^sanfranpl(\d+)/sanfranpl(\d+)\.out')
 
@@ -108,7 +116,7 @@ class show_marc(app.view):
             loc = f'CollingswoodLibraryMarcDump10-27-2008/Collingswood.out:{offset}:{length}'
             raise web.seeother('/show-records/' + loc)
 
-        loc = ':'.join(['marc', filename, offset, length])
+        loc = f"marc:{filename}:{offset}:{length}"
 
         books = web.ctx.site.things(
             {

@@ -1,9 +1,9 @@
 name: python_tests
 on:
   push:
-    branches: [ master ]
+    branches: [master]
   pull_request:
-    branches: [ master ]
+    branches: [master]
     paths-ignore:
       - '.github/workflows/javascript_tests.yml'
       - 'vendor/js/**'
@@ -17,19 +17,15 @@ permissions:
 
 jobs:
   python_tests:
-    strategy:
-      fail-fast: false
-      matrix:
-        python-version: ["3.11"]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
         with:
           submodules: true
-      - uses: actions/setup-python@v4
+      - uses: actions/setup-python@v5
         with:
-          python-version: ${{ matrix.python-version }}
-      - uses: actions/cache@v3
+          python-version-file: pyproject.toml
+      - uses: actions/cache@v4
         with:
           path: ${{ env.pythonLocation }}
           key: ${{ runner.os }}-venv-${{ env.pythonLocation }}-${{ hashFiles('requirements*.txt') }}
@@ -51,7 +47,10 @@ jobs:
       - name: Run tests
         run: |
           git fetch --no-tags --prune --depth=1 origin master
-          make lint
           make test-py
           source scripts/run_doctests.sh
           mypy --install-types --non-interactive .
+      - name: Upload coverage reports to Codecov
+        uses: codecov/codecov-action@v4
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}

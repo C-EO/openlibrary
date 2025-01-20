@@ -1,25 +1,40 @@
 import json
 import logging
+from urllib.parse import urlencode
 
 import requests
 import web
+
 from infogami import config
 from openlibrary.core.lending import get_availability_of_ocaids
 from openlibrary.plugins.openlibrary.home import format_book_data
-from urllib.parse import urlencode
 
 logger = logging.getLogger("openlibrary.inside")
 
 
 def fulltext_search_api(params):
+    from openlibrary.core.lending import (
+        config_fts_context,
+        config_ia_ol_metadata_write_s3,
+    )
+
     if not hasattr(config, 'plugin_inside'):
         return {'error': 'Unable to prepare search engine'}
     search_endpoint = config.plugin_inside['search_endpoint']
     search_select = search_endpoint + '?' + urlencode(params, 'utf-8')
+    headers = {
+        "x-preferred-client-id": web.ctx.env.get('HTTP_X_FORWARDED_FOR', 'ol-internal'),
+        "x-application-id": "openlibrary",
+        "x-search-request-context": config_fts_context,
+    }
+    if config_ia_ol_metadata_write_s3:
+        headers["authorization"] = "LOW {s3_key}:{s3_secret}".format(
+            **config_ia_ol_metadata_write_s3
+        )
 
     logger.debug('URL: ' + search_select)
     try:
-        response = requests.get(search_select, timeout=30)
+        response = requests.get(search_select, headers=headers, timeout=30)
         response.raise_for_status()
         return response.json()
     except requests.HTTPError:
@@ -56,7 +71,7 @@ def fulltext_search(q, page=1, limit=100, js=False, facets=False):
             if ed.ocaid in ocaids:
                 idx = ocaids.index(ed.ocaid)
                 ia_results['hits']['hits'][idx]['edition'] = (
-                    format_book_data(ed) if js else ed
+                    format_book_data(ed, fetch_availability=False) if js else ed
                 )
                 ia_results['hits']['hits'][idx]['availability'] = availability[ed.ocaid]
     return ia_results

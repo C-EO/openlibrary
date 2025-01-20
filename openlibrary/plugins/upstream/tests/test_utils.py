@@ -1,8 +1,10 @@
-from openlibrary.mocks.mock_infobase import MockSite
-from .. import utils
-from openlibrary.catalog.add_book.tests.conftest import add_languages
-import web
 import pytest
+import web
+
+from openlibrary.catalog.add_book.tests.conftest import add_languages  # noqa: F401
+from openlibrary.mocks.mock_infobase import MockSite
+
+from .. import utils
 
 
 def test_url_quote():
@@ -158,7 +160,7 @@ def test_reformat_html():
         f(multi_line_string) == 'This sentence has 32 '
         'characters.<br>This new sentence has 36 characters.'
     )
-    assert f(multi_line_string, 34) == 'This sentence has 32 ' 'characters.<br>T...'
+    assert f(multi_line_string, 34) == 'This sentence has 32 characters.<br>T...'
 
     assert f("<script>alert('hello')</script>", 34) == "alert(&#39;hello&#39;)"
     assert f("&lt;script&gt;") == "&lt;script&gt;"
@@ -237,3 +239,67 @@ def test_get_abbrev_from_full_lang_name(
 
     with pytest.raises(utils.LanguageNoMatchError):
         utils.get_abbrev_from_full_lang_name("Missing or non-existent language")
+
+
+def test_get_colon_only_loc_pub() -> None:
+    # This is intended as a helper function, and its caller,
+    # get_location_and_publisher(), replaces certain characters,
+    # including "[" and "]".
+    test_cases = [
+        ("", ("", "")),
+        ("New York : Random House", ("New York", "Random House")),
+        ("[New York] : [Random House]", ("[New York]", "[Random House]")),
+        ("Random House,", ("", "Random House")),
+    ]
+
+    for tc, expected in test_cases:
+        result = utils.get_colon_only_loc_pub(tc)
+        assert result == expected, f"For {tc}, expected {expected}, but got {result}"
+
+
+def test_get_location_and_publisher() -> None:
+    # Empty string
+    assert utils.get_location_and_publisher("") == ([], [])
+
+    # Test simple case of "City : Publisher".
+    loc_pub = "Sŏul T'ŭkpyŏlsi : [Kimyŏngsa]"
+    assert utils.get_location_and_publisher(loc_pub) == (
+        ["Sŏul T'ŭkpyŏlsi"],
+        ["Kimyŏngsa"],
+    )
+
+    # Test multiple locations and one publisher.
+    loc_pub = "Londres ; [New York] ; Paris : Berlitz Publishing"
+    assert utils.get_location_and_publisher(loc_pub) == (
+        ["Londres", "New York", "Paris"],
+        ["Berlitz Publishing"],
+    )
+
+    # Test two locations and two corresponding publishers.
+    loc_pub = "Paris : Pearson ; San Jose (Calif.) : Adobe"
+    assert utils.get_location_and_publisher(loc_pub) == (
+        ["Paris", "San Jose (Calif.)"],
+        ["Pearson", "Adobe"],
+    )
+
+    # Test location not identified.
+    loc_pub = "[Place of publication not identified] : Pearson"
+    assert utils.get_location_and_publisher(loc_pub) == ([], ["Pearson"])
+
+    # "Pattern" breaker insofar as it has two colons separators in a row.
+    loc_pub = "London : Wise Publications ; Bury St. Edmunds, Suffolk : Exclusive Distributors : Music Sales Limited"
+    assert utils.get_location_and_publisher(loc_pub) == (
+        ["London"],
+        ["Wise Publications"],
+    )
+
+    # Bad input where Python thinks the IA metadata is a Python list
+    loc_pub = [  # type: ignore[assignment]
+        'Charleston, SC : Monkeypaw Press, LLC',
+        'Charleston, SC : [manufactured by CreateSpace]',
+    ]
+    assert utils.get_location_and_publisher(loc_pub) == ([], [])
+
+    # Separating a not identified place with a comma
+    loc_pub = "[Place of publication not identified], BARBOUR PUB INC"
+    assert utils.get_location_and_publisher(loc_pub) == ([], ["BARBOUR PUB INC"])

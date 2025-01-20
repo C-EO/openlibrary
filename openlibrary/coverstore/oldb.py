@@ -1,5 +1,6 @@
 """Library to talk directly to OL database to avoid expensive API calls.
 """
+
 import json
 
 import web
@@ -7,7 +8,7 @@ import web
 from openlibrary.coverstore import config
 from openlibrary.utils import olmemcache
 
-__all__ = ["query", "get"]
+__all__ = ["get", "query"]
 
 
 def is_supported():
@@ -53,11 +54,11 @@ def query(key, value):
     db = get_db()
     rows = db.query(
         "SELECT thing.key"
-        + " FROM thing, edition_str"
-        + " WHERE thing.id=edition_str.thing_id"
-        + " AND key_id=$key_id"
-        + " AND value=$value"
-        + " ORDER BY thing.last_modified LIMIT 10",
+        " FROM thing, edition_str"
+        " WHERE thing.id=edition_str.thing_id"
+        " AND key_id=$key_id"
+        " AND value=$value"
+        " ORDER BY thing.last_modified LIMIT 10",
         vars=locals(),
     )
     return [row.key for row in rows]

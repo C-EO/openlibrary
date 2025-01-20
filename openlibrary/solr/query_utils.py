@@ -1,7 +1,9 @@
-from typing import Callable, Literal, Optional
-from luqum.parser import parser
-from luqum.tree import Item, SearchField, BaseOperation, Group, Word, Unary
 import re
+from collections.abc import Callable
+from typing import Literal
+
+from luqum.parser import parser
+from luqum.tree import BaseOperation, Group, Item, SearchField, Unary, Word
 
 
 class EmptyTreeError(Exception):
@@ -19,7 +21,7 @@ def luqum_remove_child(child: Item, parents: list[Item]):
     parent = parents[-1] if parents else None
     if parent is None:
         # We cannot remove the element if it is the root of the tree
-        raise EmptyTreeError()
+        raise EmptyTreeError
     elif isinstance(parent, (BaseOperation, Group, Unary)):
         new_children = tuple(c for c in parent.children if c != child)
         if not new_children:
@@ -29,7 +31,9 @@ def luqum_remove_child(child: Item, parents: list[Item]):
         else:
             parent.children = new_children
     else:
-        raise ValueError("Not supported for generic class Item")
+        raise NotImplementedError(
+            f"Not implemented for Item subclass: {parent.__class__.__name__}"
+        )
 
 
 def luqum_replace_child(parent: Item, old_child: Item, new_child: Item):
@@ -131,10 +135,12 @@ def fully_escape_query(query: str) -> str:
     'x\\\\:\\\\[A TO Z\\\\}'
     >>> fully_escape_query('foo AND bar')
     'foo and bar'
+    >>> fully_escape_query("foo's bar")
+    "foo\\\\'s bar"
     """
     escaped = query
     # Escape special characters
-    escaped = re.sub(r'[\[\]\(\)\{\}:"\-+?~^/\\,]', r'\\\g<0>', escaped)
+    escaped = re.sub(r'[\[\]\(\)\{\}:"\-+?~^/\\,\']', r'\\\g<0>', escaped)
     # Remove boolean operators by making them lowercase
     escaped = re.sub(r'AND|OR|NOT', lambda _1: _1.group(0).lower(), escaped)
     return escaped
@@ -165,7 +171,7 @@ def luqum_parser(query: str) -> Item:
     """
     tree = parser.parse(query)
 
-    def find_next_word(item: Item) -> Optional[tuple[Word, Optional[BaseOperation]]]:
+    def find_next_word(item: Item) -> tuple[Word, BaseOperation | None] | None:
         if isinstance(item, Word):
             return item, None
         elif isinstance(item, BaseOperation) and isinstance(item.children[0], Word):
@@ -253,9 +259,11 @@ def query_dict_to_str(
     result = ''
     if escaped:
         result += f' {op} '.join(
-            f'{k}:"{fully_escape_query(v)}"'
-            if phrase
-            else f'{k}:({fully_escape_query(v)})'
+            (
+                f'{k}:"{fully_escape_query(v)}"'
+                if phrase
+                else f'{k}:({fully_escape_query(v)})'
+            )
             for k, v in escaped.items()
         )
     if unescaped:
@@ -263,3 +271,27 @@ def query_dict_to_str(
             result += f' {op} '
         result += f' {op} '.join(f'{k}:{v}' for k, v in unescaped.items())
     return result
+
+
+def luqum_replace_field(query: Item, replacer: Callable[[str], str]) -> None:
+    """
+    In-place replaces portions of a field, as indicated by the replacement function.
+
+    :param query: Passed in the form of a luqum tree
+    :param replacer: function called on each query.
+    """
+    for sf, _ in luqum_traverse(query):
+        if isinstance(sf, SearchField):
+            sf.name = replacer(sf.name)
+
+
+def luqum_remove_field(query: Item, predicate: Callable[[str], bool]) -> None:
+    """
+    In-place removes fields from a query, as indicated by the predicate function.
+
+    :param query: Passed in the form of a luqum tree
+    :param predicate: function called on each query.
+    """
+    for sf, parents in luqum_traverse(query):
+        if isinstance(sf, SearchField) and predicate(sf.name):
+            luqum_remove_child(sf, parents)

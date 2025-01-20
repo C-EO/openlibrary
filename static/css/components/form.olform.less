@@ -11,6 +11,16 @@
     padding: 10px;
     background-color: @lightest-grey;
   }
+
+  .collapse {
+    margin: 0;
+  }
+
+  & > label {
+    display: inline-block;
+    padding: 10px 0 2px;
+  }
+
   .label {
     padding: 10px 0 2px;
 
@@ -26,17 +36,10 @@
   }
   textarea {
     width: 100%;
+    resize: vertical;
   }
 
   .multi-input-autocomplete--language {
-    div{
-      display: flex;
-      flex-flow: wrap;
-      flex: 1
-    }
-    input {
-      flex: 1;
-    }
     hr {
       flex-basis: 100%;
       height: 0;
@@ -45,8 +48,67 @@
     }
   }
 
+  .mia__input {
+    display: flex;
+    flex-flow: wrap;
+    flex: 1;
+
+    & + .mia__input {
+      margin-top: 3px;
+    }
+
+    .ac-input__visible {
+      flex: 1;
+      // Spacing is controlled by parent not individual input elements
+      margin: 0;
+    }
+
+    .mia__reorder {
+      cursor: move;
+      min-width: 24px;
+      text-align: center;
+    }
+
+    .mia__remove {
+      color: @red;
+      text-decoration: none;
+    }
+
+    .mia__preview {
+      flex: 1;
+    }
+
+    // Weird glitch where while dragging the element is very offset
+    &.ui-sortable-helper {
+      margin-top: -20px;
+    }
+  }
+
+  .links-form {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 5px;
+    padding-bottom: 20px;
+
+    .links-form__inputs {
+      display: flex;
+      flex-flow: row wrap;
+      gap: 5px;
+      width: 100%;
+    }
+
+    .links-form__label, .links-form__url {
+      flex: 1 1 0;
+      min-width: 250px;
+    }
+  }
+
   input[type=number],
-  input[type=text] {
+  input[type=text],
+  input[type=password],
+  input[type=url],
+  input[type=email] {
     margin: 0 10px 5px 0;
   }
 
@@ -54,11 +116,13 @@
   input[type=text],
   input[type=email],
   input[type=password],
+  input[type=url],
   textarea {
     font-size: 1.0em;
     font-family: @lucida_sans_serif-5;
     padding: 3px;
     max-width: 100%;
+    resize: vertical;
   }
 
   input[type=number] {
@@ -73,8 +137,6 @@
   }
 
   select {
-    width: 100%;
-    font-size: 1.125em;
     font-family: @lucida_sans_serif-1;
     padding: 3px;
   }
@@ -91,9 +153,11 @@
       input[type=text],
       input[type=email],
       input[type=password],
+      input[type=url],
       textarea {
         font-size: .875em;
         width: 100%;
+        resize: vertical;
       }
     }
     /* stylelint-enable selector-max-specificity */
@@ -162,8 +226,10 @@
     input[type=text],
     input[type=email],
     input[type=password],
+    input[type=url],
     textarea {
       width: 475px;
+      resize: vertical;
     }
 
     .input {

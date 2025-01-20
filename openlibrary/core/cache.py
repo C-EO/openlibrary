@@ -1,34 +1,35 @@
 """Caching utilities.
 """
+
+import functools
+import hashlib
+import json
 import random
 import string
-import time
 import threading
-import functools
-from typing import Callable, Literal
+import time
+from collections.abc import Callable
+from typing import Any, Literal, cast
 
 import memcache
-import json
 import web
 
 from infogami import config
-from infogami.utils import stats
 from infogami.infobase.client import Nothing
-
+from infogami.utils import stats
+from openlibrary.core.helpers import NothingEncoder
 from openlibrary.utils import olmemcache
 from openlibrary.utils.dateutil import MINUTE_SECS
-from openlibrary.core.helpers import NothingEncoder
-
 
 __all__ = [
-    "cached_property",
     "Cache",
-    "MemoryCache",
     "MemcacheCache",
+    "MemoryCache",
     "RequestCache",
-    "memoize",
-    "memcache_memoize",
+    "cached_property",
     "get_memcache",
+    "memcache_memoize",
+    "memoize",
 ]
 
 DEFAULT_CACHE_LIFETIME = 2 * MINUTE_SECS
@@ -57,6 +58,7 @@ class memcache_memoize:
         key_prefix: str | None = None,
         timeout: int = MINUTE_SECS,
         prethread: Callable | None = None,
+        hash_args: bool = False,
     ):
         """Creates a new memoized function for ``f``."""
         self.f = f
@@ -68,6 +70,7 @@ class memcache_memoize:
         self.stats = web.storage(calls=0, hits=0, updates=0, async_updates=0)
         self.active_threads: dict = {}
         self.prethread = prethread
+        self.hash_args = hash_args
 
     def _get_memcache(self):
         if self._memcache is None:
@@ -175,20 +178,21 @@ class memcache_memoize:
             thread.join()
 
     def encode_args(self, args, kw=None):
+        """Encodes arguments to construct the memcache key."""
         kw = kw or {}
-        """Encodes arguments to construct the memcache key.
-        """
+
         # strip [ and ] from key
         a = self.json_encode(list(args))[1:-1]
 
         if kw:
-            return a + "-" + self.json_encode(kw)
-        else:
-            return a
+            a = a + "-" + self.json_encode(kw)
+        if self.hash_args:
+            return f"{hashlib.md5(a.encode('utf-8')).hexdigest()}"
+        return a
 
     def compute_key(self, args, kw):
         """Computes memcache key for storing result of function call with given arguments."""
-        key = self.key_prefix + "-" + self.encode_args(args, kw)
+        key = self.key_prefix + "$" + self.encode_args(args, kw)
         return key.replace(
             " ", "_"
         )  # XXX: temporary fix to handle spaces in the arguments
@@ -262,28 +266,28 @@ class Cache:
 
     def get(self, key):
         """Returns the value for given key. Returns None if that key is not present in the cache."""
-        raise NotImplementedError()
+        raise NotImplementedError
 
     def set(self, key, value, expires=0):
         """Sets a value in the cache.
         If expires is non-zero, the cache may delete that entry from the cache after expiry.
         The implementation can choose to ignore the expires argument.
         """
-        raise NotImplementedError()
+        raise NotImplementedError
 
     def add(self, key, value, expires=0):
         """Adds a new entry in the cache. Nothing is done if there is already an entry with the same key.
 
         Returns True if a new entry is added to the cache.
         """
-        raise NotImplementedError()
+        raise NotImplementedError
 
     def delete(self, key):
         """Deletes an entry from the cache. No error is raised if there is no entry in present in the cache with that key.
 
         Returns True if the key is deleted.
         """
-        raise NotImplementedError()
+        raise NotImplementedError
 
 
 class MemoryCache(Cache):
@@ -333,15 +337,32 @@ class MemcacheCache(Cache):
 
                 return MockMemcacheClient()
 
-    def get(self, key):
-        key = web.safestr(key)
+    def _encode_key(self, key: str) -> str:
+        return cast(str, web.safestr(key))
+
+    def get(self, key: str) -> Any:
+        key = self._encode_key(key)
         stats.begin("memcache.get", key=key)
         value = self.memcache.get(key)
         stats.end(hit=value is not None)
         return value and json.loads(value)
 
-    def set(self, key, value, expires=0):
-        key = web.safestr(key)
+    def get_multi(self, keys: list[str]) -> dict[str, Any]:
+        keys = [self._encode_key(k) for k in keys]
+        stats.begin("memcache.get_multi")
+        d = self.memcache.get_multi(keys)
+        stats.end(hit=bool(d))
+        return {k: json.loads(v) for k, v in d.items()}
+
+    def set_multi(self, mapping: dict[str, Any], expires=0):
+        mapping = {self._encode_key(k): json.dumps(v) for k, v in mapping.items()}
+        stats.begin("memcache.set_multi")
+        d = self.memcache.set_multi(mapping, expires)
+        stats.end()
+        return d
+
+    def set(self, key: str, value: Any, expires=0):
+        key = cast(str, web.safestr(key))
         value = json.dumps(value)
         stats.begin("memcache.set", key=key)
         value = self.memcache.set(key, value, expires)
@@ -393,7 +414,7 @@ request_cache = RequestCache()
 
 
 def get_memcache():
-    return memcache_cache.memcache
+    return memcache_cache
 
 
 def _get_cache(engine):
@@ -463,22 +484,18 @@ class memoize:
 
     def __init__(
         self,
-        engine: Literal["memory", "memcache", "request"] = "memory",
-        key=None,
+        engine: Literal["memory", "memcache", "request"],
+        key: str | Callable[..., str | tuple],
         expires: int = 0,
         background: bool = False,
         cacheable: Callable | None = None,
     ):
         self.cache = _get_cache(engine)
-        self.keyfunc = self._make_key_func(key)
+        self.keyfunc = (
+            key if callable(key) else functools.partial(build_memcache_key, key)
+        )
         self.cacheable = cacheable
         self.expires = expires
-
-    def _make_key_func(self, key):
-        if isinstance(key, str):
-            return PrefixKeyFunc(key)
-        else:
-            return key
 
     def __call__(self, f):
         """Returns the memoized version of f."""
@@ -543,33 +560,15 @@ class memoize:
             return self.cache.set(key, value, expires=self.expires)
 
 
-class PrefixKeyFunc:
-    """A function to generate cache keys using a prefix and arguments."""
+def build_memcache_key(prefix: str, *args, **kw) -> str:
+    key = prefix
 
-    def __init__(self, prefix):
-        self.prefix = prefix
+    if args:
+        key += "-" + json.dumps(args, separators=(",", ":"), sort_keys=True)[1:-1]
+    if kw:
+        key += "-" + json.dumps(kw, separators=(",", ":"), sort_keys=True)
 
-    def __call__(self, *a, **kw):
-        return self.prefix + "-" + self.encode_args(a, kw)
-
-    def encode_args(self, args, kw=None):
-        kw = kw or {}
-        """Encodes arguments to construct the memcache key.
-        """
-        # strip [ and ] from key
-        a = self.json_encode(list(args))[1:-1]
-
-        if kw:
-            return a + "-" + self.json_encode(kw)
-        else:
-            return a
-
-    def json_encode(self, value):
-        """json.dumps without extra spaces and consistent ordering of dictionary keys.
-
-        memcache doesn't like spaces in the key.
-        """
-        return json.dumps(value, separators=(",", ":"), sort_keys=True)
+    return key
 
 
 def method_memoize(f):

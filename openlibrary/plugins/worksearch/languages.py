@@ -1,20 +1,17 @@
 """Language pages
 """
 
-from infogami.plugins.api.code import jsonapi
-from infogami.utils import delegate, stats
-from infogami.utils.view import render_template, safeint
-import web
 import json
 import logging
 
+import web
+
+from infogami.plugins.api.code import jsonapi
+from infogami.utils import delegate
+from infogami.utils.view import render_template, safeint
 from openlibrary.plugins.upstream.utils import get_language_name
 
-from . import subjects
-from . import search
-
-import urllib
-
+from . import search, subjects
 
 logger = logging.getLogger("openlibrary.worksearch")
 
@@ -72,7 +69,8 @@ class index_json(delegate.page):
 
     @jsonapi
     def GET(self):
-        return json.dumps(get_top_languages(15))
+        i = web.input(limit=15)
+        return json.dumps(get_top_languages(safeint(i.limit, 15)))
 
 
 class language_search(delegate.page):
@@ -121,12 +119,13 @@ class LanguageEngine(subjects.SubjectEngine):
 
 
 def setup():
-    d = web.storage(
-        name="language",
-        key="languages",
-        prefix="/languages/",
-        facet="language",
-        facet_key="language",
-        engine=LanguageEngine,
+    subjects.SUBJECTS.append(
+        subjects.SubjectMeta(
+            name="language",
+            key="languages",
+            prefix="/languages/",
+            facet="language",
+            facet_key="language",
+            Engine=LanguageEngine,
+        )
     )
-    subjects.SUBJECTS.append(d)

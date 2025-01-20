@@ -1,20 +1,19 @@
 """Cover management."""
+
 import datetime
-from logging import getLogger
 import os
-from typing import Optional
-
 from io import BytesIO
+from logging import getLogger
 
-from PIL import Image
 import web
+from PIL import Image
 
 from openlibrary.coverstore import config, db
 from openlibrary.coverstore.utils import random_string, rm_f
 
 logger = getLogger("openlibrary.coverstore.coverlib")
 
-__all__ = ["save_image", "read_image", "read_file"]
+__all__ = ["read_file", "read_image", "save_image"]
 
 
 def save_image(data, category, olid, author=None, ip=None, source_url=None):
@@ -60,7 +59,7 @@ def make_path_prefix(olid, date=None):
     )
 
 
-def write_image(data: bytes, prefix: str) -> Optional[Image.Image]:
+def write_image(data: bytes, prefix: str) -> Image.Image | None:
     path_prefix = find_image_path(prefix)
     dirname = os.path.dirname(path_prefix)
     if not os.path.exists(dirname):
@@ -72,7 +71,7 @@ def write_image(data: bytes, prefix: str) -> Optional[Image.Image]:
 
         img = Image.open(BytesIO(data))
         if img.mode != 'RGB':
-            img = img.convert('RGB')
+            img = img.convert('RGB')  # type: ignore[assignment]
 
         for name, size in config.image_sizes.items():
             path = f"{path_prefix}-{name}.jpg"
@@ -102,7 +101,7 @@ def resize_image(image, size):
         y = size[1]
     size = x, y
 
-    return image.resize(size, Image.ANTIALIAS)
+    return image.resize(size, Image.LANCZOS)
 
 
 def find_image_path(filename):

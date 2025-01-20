@@ -23,12 +23,20 @@ table#editions,
 
     tr {
       background: linear-gradient(0deg, @lightest-grey, transparent);
+      // stylelint-disable max-nesting-depth
+      th.read:focus {
+        outline: revert
+      }
+      th.title:focus {
+        outline: revert
+      }
+      // stylelint-enable max-nesting-depth
     }
   }
 
   th {
     font-family: @news_gothic_sans_serif-2;
-    font-size: 11px;
+    font-size: @font-size-label-small;
     font-weight: 600;
     text-transform: uppercase;
     line-height: normal;
@@ -56,12 +64,14 @@ table#editions,
   }
 
   div.title {
-    font-size: 1.0em;
+    font-size: @font-size-title-small;
     padding: 10px 0;
+    min-width: 1%;
+    overflow-wrap: break-word;
   }
 
   div.links {
-    font-size: 12px;
+    font-size: @font-size-label-medium;
     color: @dark-grey;
     line-height: 1.5em;
   }
@@ -135,7 +145,7 @@ table#editions,
           max-width: 40px;
         }
       }
-      // stylelintenable max-nesting-depth
+      // stylelint-enable max-nesting-depth
     }
   }
 }
@@ -202,10 +212,12 @@ table#editions,
       .read {
         display: flex;
         flex-direction: column;
+        // stylelint-disable max-nesting-depth
         ul {
           order: -1;
           padding: 10px 0;
         }
+        // stylelint-enable max-nesting-depth
       }
     }
 
@@ -235,4 +247,10 @@ tbody {
 
 .editions-table__links {
   text-align: center;
+}
+
+a.paginate_button.current {
+  background-color: @lightest-grey;
+  border: 1px solid @lighter-grey;
+  color: @black;
 }

@@ -4,11 +4,11 @@ connection_type: hybrid
 
 site: openlibrary.org
 
-from_address: "Open Library <noreply@openlibrary.org>"
-report_spam_address: "Open Library <info@openlibrary.org>"
+from_address: "Open Library <noreply@archive.org>"
+report_spam_address: "Open Library <info@archive.org>"
 
-support_case_notification_address: "Open Library <info@openlibrary.org>"
-support_case_control_address: "support@openlibrary.org"
+support_case_notification_address: "Open Library <info@archive.org>"
+support_case_control_address: "support@archive.org"
 
 smtp_server: localhost
 
@@ -54,10 +54,9 @@ plugin_worksearch:
 
 http_request_timeout: 10
 
-stats_solr: solr:8983
-
 features:
     cache_most_recent: enabled
+    debug: enabled
     dev: enabled
     history_v2: admin
     inlibrary: enabled
@@ -80,7 +79,6 @@ upstream_to_www_migration: true
 default_template_root: /upstream
 css_root: /upstream/css
 js_root: /upstream/js
-use_google_cdn: false
 logging_config_file: conf/logging.ini
 email_config_file: conf/email.ini
 
@@ -151,6 +149,10 @@ plugin_recaptcha:
     public_key: ''
     private_key: ''
 
+plugin_invisible_recaptcha:
+    public_key: ''
+    private_key: ''
+
 plugin_inside:
     search_endpoint: https://be-api.us.archive.org/fts/v1/search
 
@@ -170,17 +172,12 @@ internal_tests_api_key: 8oPd1tx747YH374ohs48ZO5s2Nt1r9yD
 ia_availability_api_v2_url: https://archive.org/services/availability/
 ia_base_url: https://archive.org
 
-ia_civicrm_api:
-    url: http://web:8080/internal/fake/civicrm
-    api_key: XXX
-    site_key: XXX
-    auth: XXX
-
 sentry:
     enabled: false
     # Dummy endpoint; where sentry logs are sent to
     dsn: 'https://examplePublicKey@o0.ingest.sentry.io/0'
     traces_sample_rate: 1.0
+    profiles_sample_rate: 0.001
     environment: 'local'
 
 sentry_cron_jobs:

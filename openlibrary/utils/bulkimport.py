@@ -2,11 +2,12 @@
 going through infobase API.
 """
 
+import datetime
 import json
 import os
-import web
-import datetime
 from collections import defaultdict
+
+import web
 
 
 class DocumentLoader:
@@ -81,12 +82,12 @@ class DocumentLoader:
 
         # insert things
         things = [
-            dict(
-                key=doc['key'],
-                type=type_ids[doc['type']['key']],
-                created=timestamp,
-                last_modified=timestamp,
-            )
+            {
+                'key': doc['key'],
+                'type': type_ids[doc['type']['key']],
+                'created': timestamp,
+                'last_modified': timestamp,
+            }
             for doc in documents
         ]
         thing_ids = self.db.multiple_insert('thing', things)
@@ -126,7 +127,11 @@ class DocumentLoader:
 
         # add versions
         versions = [
-            dict(transaction_id=txn_id, thing_id=doc['id'], revision=doc['revision'])
+            {
+                'transaction_id': txn_id,
+                'thing_id': doc['id'],
+                'revision': doc['revision'],
+            }
             for doc in documents
         ]
         self.db.multiple_insert('version', versions, seqname=False)
@@ -141,11 +146,11 @@ class DocumentLoader:
         for doc in documents:
             try:
                 data.append(
-                    dict(
-                        thing_id=doc.pop('id'),
-                        revision=doc['revision'],
-                        data=json.dumps(doc),
-                    )
+                    {
+                        'thing_id': doc.pop('id'),
+                        'revision': doc['revision'],
+                        'data': json.dumps(doc),
+                    }
                 )
             except UnicodeDecodeError:
                 print(repr(doc))
@@ -190,16 +195,16 @@ class DocumentLoader:
         # update latest_revision and last_modified in thing table
         self.db.query(
             "UPDATE thing"
-            + " SET last_modified=$timestamp, latest_revision=latest_revision+1"
-            + " WHERE key IN $keys",
+            " SET last_modified=$timestamp, latest_revision=latest_revision+1"
+            " WHERE key IN $keys",
             vars=locals(),
         )
 
         # fetch the current data
         rows = self.db.query(
             "SELECT thing.id, thing.key, thing.created, thing.latest_revision, data.data"
-            + " FROM thing, data"
-            + " WHERE data.thing_id=thing.id AND data.revision=thing.latest_revision-1 and thing.key in $keys",
+            " FROM thing, data"
+            " WHERE data.thing_id=thing.id AND data.revision=thing.latest_revision-1 and thing.key in $keys",
             vars=locals(),
         )
 
@@ -283,8 +288,8 @@ class Reindexer:
         """Get documents with given keys from database and add "id" and "type_id" to them."""
         rows = self.db.query(
             "SELECT thing.id, thing.type, data.data"
-            + " FROM thing, data"
-            + " WHERE data.thing_id=thing.id AND data.revision=thing.latest_revision and thing.key in $keys",
+            " FROM thing, data"
+            " WHERE data.thing_id=thing.id AND data.revision=thing.latest_revision and thing.key in $keys",
             vars=locals(),
         )
 
@@ -306,7 +311,7 @@ class Reindexer:
                 if table in all_tables:
                     data[table].append(doc['id'])
 
-        for table, thing_ids in data.items():
+        for table in data:
             self.db.delete(table, where="thing_id IN $thing_ids", vars=locals())
 
     def create_new_index(self, documents, tables=None):
@@ -384,12 +389,12 @@ class Reindexer:
                 self.prepare_insert(rows, thing_id, type_id, name, v, ordering=i)
         else:
             rows.append(
-                dict(
-                    thing_id=thing_id,
-                    key_id=self.get_property_id(type_id, name),
-                    value=value,
-                    ordering=ordering,
-                )
+                {
+                    'thing_id': thing_id,
+                    'key_id': self.get_property_id(type_id, name),
+                    'value': value,
+                    'ordering': ordering,
+                }
             )
 
     def process_refs(self, data):
@@ -458,11 +463,11 @@ def _test():
     print(
         loader.bulk_new(
             [
-                dict(
-                    key="/b/OL%dM" % i,
-                    title="book %d" % i,
-                    type={"key": "/type/edition"},
-                    table_of_contents=[
+                {
+                    'key': "/b/OL%dM" % i,
+                    'title': "book %d" % i,
+                    'type': {"key": "/type/edition"},
+                    'table_of_contents': [
                         {
                             "type": {"key": "/type/toc_item"},
                             "class": "part",
@@ -471,7 +476,7 @@ def _test():
                             "pagenum": "10",
                         }
                     ],
-                )
+                }
                 for i in range(1, n + 1)
             ],
             comment="add books",

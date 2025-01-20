@@ -88,25 +88,18 @@ msgstr "条形码扫描器 (Beta)"
 msgid "Point your camera at a barcode! 📷"
 msgstr "请将您的相机对准条形码！ 📷"
 
-#: account/borrow.html:82 borrow_admin.html:104
+#: account/borrow.html:82
 #, python-format
-msgid "1 Current Loan"
+msgid "%(count)d Current Loan"
 msgid_plural "%(count)d Current Loans"
 msgstr[0] "目前的贷款"
 msgstr[1] "%(count)d 目前贷款"
 
-#: account/borrow.html:84 admin/loans_table.html:41 borrow_admin.html:106
+#: account/borrow.html:84 admin/loans_table.html:41
 msgid "Loan Expires"
 msgstr "贷款到期"
 
-#: borrow_admin.html:168
-#, python-format
-msgid "%d person waiting"
-msgid_plural "%d people waiting"
-msgstr[0] "%d 人等待中"
-msgstr[1] "%d 人等待中"
-
-#: ManageWaitlistButton.html:11 borrow_admin.html:186
+#: ManageWaitlistButton.html:11
 #, python-format
 msgid "Waiting for %d day"
 msgid_plural "Waiting for %d days"
@@ -277,7 +270,7 @@ msgstr "电子邮箱"
 
 #: login.html:31
 msgid "Forgot your Internet Archive email?"
-msgstr "忘记您的Internet Archive电子邮箱？"
+msgstr "忘记您的 Internet Archive 电子邮箱？"
 
 #: account/email/forgot-ia.html:33 forms.py:20 login.html:41
 msgid "Password"
@@ -405,9 +398,9 @@ msgstr "时间"
 #: merge/authors.html:89 publishers/view.html:17 subjects.html:19
 #: type/author/view.html:110
 #, python-format
-msgid "1 work"
+msgid "%(count)d work"
 msgid_plural "%(count)d works"
-msgstr[0] "1份作品"
+msgstr[0] "%(count)d 份作品"
 msgstr[1] "%(count)d 份作品"
 
 #: subjects.html:22
@@ -458,7 +451,7 @@ msgstr "版本已出版"
 
 #: admin/imports.html:18 publishers/view.html:44 subjects.html:49
 msgid "You need to have JavaScript turned on to see the nifty chart!"
-msgstr "您需要打开JavaScript才能看到漂亮的图表!"
+msgstr "您需要打开 JavaScript 才能看到漂亮的图表!"
 
 #: publishers/view.html:46 subjects.html:51
 msgid "Year of Publication"
@@ -480,9 +473,9 @@ msgstr "查看更多该作者的书籍，以及了解该作者"
 #: search/authors.html:66 search/publishers.html:29 search/subjects.html:89
 #: subjects.html:88
 #, python-format
-msgid "1 book"
+msgid "%(count)d book"
 msgid_plural "%(count)d books"
-msgstr[0] "1本书"
+msgstr[0] "%(count)d 本书"
 msgstr[1] "%(count)d 本书"
 
 #: subjects.html:92
@@ -500,9 +493,9 @@ msgstr "获取更多关于该出版商的信息"
 #: SearchResultsWork.html:55 books/check.html:36 merge/authors.html:82
 #: publishers/view.html:106 subjects.html:111
 #, python-format
-msgid "1 edition"
+msgid "%(count)s edition"
 msgid_plural "%(count)s editions"
-msgstr[0] "1个版本"
+msgstr[0] "%(count)s 个版本"
 msgstr[1] "%(count)s 个版本"
 
 #: support.html:7 support.html:10
@@ -671,9 +664,9 @@ msgstr "在"
 #: search/authors.html:37 search/subjects.html:27 work_search.html:58
 #: work_search.html:169
 #, python-format
-msgid "1 hit"
+msgid "%(count)s hit"
 msgid_plural "%(count)s hits"
-msgstr[0] "1 次点击"
+msgstr[0] "%(count)s 次点击"
 msgstr[1] "%(count)s 次点击"
 
 #: lib/nav_foot.html:30 lib/nav_head.html:36 search/advancedsearch.html:7
@@ -2188,7 +2181,7 @@ msgstr "例如"
 
 #: books/edit/edition.html:128
 msgid "Where was the book published?"
-msgstr "这本书是哪个时候出版的？"
+msgstr "这本书是在哪里出版的？"
 
 #: books/edit/edition.html:129
 msgid "City, Country please."
@@ -2261,7 +2254,7 @@ msgstr "这个版本是用什么语言写的？"
 
 #: books/edit/edition.html:291
 msgid "Is it a translation of another book?"
-msgstr "它是另外一本书的译本吗》"
+msgstr "它是另外一本书的译本吗？"
 
 #: books/edit/edition.html:309
 msgid "Yes, it's a translation"
@@ -2723,9 +2716,9 @@ msgstr "浏览有关%(subject)s的书籍"
 
 #: home/categories.html:30
 #, python-format
-msgid "1 Book"
+msgid "%(count)s Book"
 msgid_plural "%(count)s Books"
-msgstr[0] "1 本书"
+msgstr[0] "%(count)s 本书"
 msgstr[1] "%(count)s 本书"
 
 #: home/index.html:8 home/welcome.html:9
@@ -2898,9 +2891,9 @@ msgstr "于 %(date)s 创建"
 
 #: lib/history.html:32
 #, python-format
-msgid "1 revision"
+msgid "%(count)d revision"
 msgid_plural "%(count)d revisions"
-msgstr[0] "1 次修订"
+msgstr[0] "%(count)d 次修订"
 msgstr[1] "%(count)d 次修订"
 
 #: lib/history.html:44
@@ -3394,9 +3387,9 @@ msgstr "来自<a href=\"%(key)s\">%(owner)s</a>"
 #: lists/home.html:51 lists/preview.html:23 lists/snippet.html:18
 #: type/list/embed.html:17 type/list/view.html:40
 #, python-format
-msgid "1 item"
+msgid "%(count)d item"
 msgid_plural "%(count)d items"
-msgstr[0] "1 个项目"
+msgstr[0] "%(count)d 个项目"
 msgstr[1] "%(count)d 个项目"
 
 #: lists/home.html:53 lists/preview.html:26 lists/snippet.html:20
@@ -3628,9 +3621,9 @@ msgstr "试试别的？"
 
 #: publishers/view.html:19
 #, python-format
-msgid "1 ebook"
+msgid "%(count)s ebook"
 msgid_plural "%(count)s ebooks"
-msgstr[0] "1 本电子书"
+msgstr[0] "%(count)s 本电子书"
 msgstr[1] "%(count)s 本电子书"
 
 #: publishers/view.html:33
@@ -3771,12 +3764,19 @@ msgstr "在内部搜索"
 msgid "No hits for: %(query)s"
 msgstr "未找到符合条件: %(query)s"
 
-#: search/inside.html:37
-#, python-format
-msgid "About 1 result found in %(seconds)s"
-msgid_plural "About %(count)s results found in %(seconds)s"
+#: search/inside.html:29
+#, fuzzy, python-format
+msgid "About %(count)s result found"
+msgid_plural "About %(count)s results found"
+msgstr[0] ""
+msgstr[1] ""
+
+#: search/inside.html:29
+#, fuzzy, python-format
+msgid "in %(seconds)s second"
+msgid_plural "in %(seconds)s seconds"
 msgstr[0] "在%(seconds)s秒内找到约1个结果"
-msgstr[1] "在%(seconds)s秒内找到约%(count)s个结果"
+msgstr[1] "在%(seconds)s秒内找到约个结果"
 
 #: search/lists.html:7
 msgid "Search results for Lists"
@@ -3914,9 +3914,9 @@ msgstr "人们最想要的书(全部时间)"
 #: stats/readinglog.html:70 stats/readinglog.html:78 stats/readinglog.html:87
 #: stats/readinglog.html:96
 #, python-format
-msgid "Added 1 time"
+msgid "Added %(count)d time"
 msgid_plural "Added %(count)d times"
-msgstr[0] "已添加1次"
+msgstr[0] "已添加%(count)d次"
 msgstr[1] "已添加%(count)d次"
 
 #: stats/readinglog.html:74
@@ -4180,11 +4180,11 @@ msgstr "同步 Archive.org ID"
 
 #: type/edition/admin_bar.html:25
 msgid "View Book on Archive.org"
-msgstr "查看Archive.org上的书籍"
+msgstr "查看 Archive.org 上的书籍"
 
 #: type/edition/admin_bar.html:28
 msgid "Orphaned Edition"
-msgstr "孤儿版本"
+msgstr "孤立版本"
 
 #: type/edition/publisher_line.html:11
 msgid "This edition was published"
@@ -4267,7 +4267,7 @@ msgstr "由%(authorlink)s添加。"
 
 #: type/edition/view.html:311 type/work/view.html:311
 msgid "added anonymously."
-msgstr "匿名添加。"
+msgstr "由匿名用户添加。"
 
 #: type/edition/view.html:319 type/work/view.html:319
 msgid "Links <span class=\"gray small sansserif\">outside Open Library</span>"
@@ -4978,7 +4978,7 @@ msgstr "搜索附近的图书馆"
 
 #: WorldcatLink.html:13
 msgid "Check WorldCat for an edition near you"
-msgstr "在WorldCat上搜索您附近的书籍版本"
+msgstr "在 WorldCat 上搜索您附近的书籍版本"
 
 #: daisy.html:10
 msgid "Encrypted daisy download for authorized print-disabled patrons"
@@ -5016,7 +5016,7 @@ msgstr "上一次由%(author_link)s编辑"
 
 #: databarHistory.html:18 databarView.html:24
 msgid "Last edited anonymously"
-msgstr "上一次由匿名编辑"
+msgstr "上一次由匿名用户编辑"
 
 #: databarWork.html:85
 msgid "Buy this book"
@@ -5029,7 +5029,7 @@ msgstr "%(donor)s慷慨捐赠了这本书"
 
 #: databarWork.html:106
 msgid "This book was generously donated anonymously"
-msgstr "匿名慷慨捐赠了这本书"
+msgstr "匿名用户慷慨捐赠了这本书"
 
 #: databarWork.html:111
 msgid "Learn more about Book Sponsorship"

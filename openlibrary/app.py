@@ -1,8 +1,11 @@
 """Utilities to build the app.
 """
+
+from web.template import TemplateResult
+
 from infogami.utils import app as _app
-from infogami.utils.view import render, public
 from infogami.utils.macro import macro
+from infogami.utils.view import public, render
 
 
 class view(_app.page):
@@ -62,7 +65,7 @@ class subview(_app.view):
 
 @macro
 @public
-def render_template(name, *a, **kw):
+def render_template(name: str, *a, **kw) -> TemplateResult:
     if "." in name:
         name = name.rsplit(".", 1)[0]
     return render[name](*a, **kw)

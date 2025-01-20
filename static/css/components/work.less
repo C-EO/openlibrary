@@ -5,14 +5,9 @@
 @sidebar-width-with-margin: 60px + @sidebar-width;
 @test-body-mobile-width: 1060px;
 
-// allows smooth scrolling after clicking on book page jump links
-html {
-  scroll-behavior: smooth;
-}
-
 /* stylelint-disable no-descending-specificity */
 .workDetails {
-  padding: 20px 0;
+  padding: 0 0 20px;
   .book-description {
     text-align: justify;
   }
@@ -21,9 +16,11 @@ html {
 // Left (editionCover)
 .editionCover {
   min-height: 10px;
-  padding-right: 1.5em;
+  padding-right: 0;
   .cover-animation {
     transition: transform .8s, opacity .8s;
+    position: relative;
+    z-index: @z-index-level-negative;
   }
   .cover-animation:hover {
     transform: perspective(465px) rotateX(0deg) rotateY(-10deg);
@@ -33,16 +30,21 @@ html {
 @import (less) "components/cover.less";
 @import (less) "components/illustration.less";
 @import (less) "components/rating-form.less";
-@import (less) "components/dropper.less";
+@import (less) "components/mybooks-dropper.less";
 @import (less) "components/listLists.less";
 
 // Center (editionAbout)
 div.editionAbout {
   margin-bottom: 20px;
+  min-width: 1%;
 
   p {
     margin: 1em 0;
-    font-size: 13px;
+    font-size: @font-size-body-medium;
+  }
+  p.book-description {
+    margin: 0;
+    text-align: left;
   }
 
   p:first-child {
@@ -54,15 +56,6 @@ div.editionAbout {
   }
 }
 
-.work-title{
-  margin-top: 5px;
-  margin-bottom: 0;
-}
-
-.work-subtitle{
-  margin-top: 0;
-}
-
 .work-description{
   pre {
     overflow: auto;
@@ -70,6 +63,21 @@ div.editionAbout {
 }
 
 .workFooter {
+  .lists-heading {
+    display: flex;
+    /* stylelint-disable selector-max-specificity */
+    h2.lists-title {
+      flex: 1;
+      margin-top: 5px;
+      margin-bottom: 14px;
+      font-size: 1.375em;
+    }
+    a {
+      color: @link-blue;
+      font-size: 16px;
+    }
+    /* stylelint-enable selector-max-specificity */
+  }
   ul.listLists {
     display: flex;
   }
@@ -79,10 +87,22 @@ div.editionAbout {
   }
 }
 
-.book-description{
-  font-size: .9em;
+textarea[name="edition--notes"] + h3 + .wmd-preview,
+.edition-notes,
+textarea[name="work--description"] + h3 + .wmd-preview,
+.book-description {
+  font-size: @font-size-label-medium;
   margin-top: 5px;
   margin-bottom: 20px;
+
+  ul, ol {
+    padding-left: 2rem;
+
+    li {
+      list-style-type: initial;
+      font-size: .8rem;
+    }
+  }
 }
 
 .checkboxes label {
@@ -110,32 +130,8 @@ div.editionAbout {
   content: attr(data-before);
 }
 
-.restricted-view{
-  display: block;
-  z-index: @z-index-level-1;
-}
-
-.restricted-height{
-  overflow: hidden;
-  height: 57px;
-}
-
-.section, .section h6 {
-  font-size: .8em;
-}
-
-h3.edition-header {
-  font-size: 14px;
-  margin: 0;
-}
-
-h2.edition-byline {
-  margin: 7px 2px 20px;
-}
-
-.first-published-date {
-  color: @grey;
-  font-size: .8em;
+.section h6 {
+  font-size: @font-size-label-medium;
 }
 
 .edition-overview {
@@ -157,9 +153,12 @@ h2.edition-byline {
 }
 
 a.section-anchor {
-  scroll-margin-top: 70px;
   height: 20px;
   display: block;
+
+  &--no-height {
+    height: 0;
+  }
 }
 
 .book-overview {
@@ -170,7 +169,7 @@ a.section-anchor {
 }
 
 .meta dt, .meta dd {
-  font-size: 12px;
+  font-size: @font-size-label-medium;
 }
 
 .book-subtitle{
@@ -197,6 +196,7 @@ div.editionTools {
 @media only screen and (min-width: @width-breakpoint-desktop) {
   .workDetails {
     display: flex;
+    padding: 20px 0;
   }
   div.edition {
     &Cover {
@@ -250,14 +250,14 @@ div.editionTools {
     margin: 0 4px;
     border: 1px solid @lighter-grey;
     border-radius: 5px;
-    font-size: .8em;
+    font-size: @font-size-body-medium;
     word-break: break-word;
     text-align: center;
     min-width: 100px;
 
     div {
       margin-bottom: 4px;
-      font-size: .9em;
+      font-size: @font-size-label-medium;
       color: @grey;
       word-wrap: break-word;
     }
@@ -302,14 +302,6 @@ div.editionTools {
   color: @grey;
 }
 
-.work-line {
-  font-style: oblique;
-  color: @grey;
-  a {
-    color: @grey;
-  }
-}
-
 .loadingIndicator {
   display: flex;
   justify-content: center;
@@ -322,16 +314,10 @@ div.editionTools {
   color: @link-blue;
 }
 @media only screen and (max-width: @width-breakpoint-desktop){
-  .desktop-book-header{
-    display: none;
+  div.editionAbout .book-description {
+    padding-top: 1em;
   }
 }
 
-.mobile-book-header {
-  h1 {
-    line-height: normal;
-  }
-}
-
-@import (less) "components/compact-title.less";
 @import (less) "components/check-in.less";
+@import (less) "components/work-title-and-author.less";

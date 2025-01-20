@@ -16,14 +16,15 @@ __version__ = "0.1"
 __author__ = "Anand Chitipothu <anandology@gmail.com>"
 
 
-import os
-import re
 import datetime
 import json
-import web
 import logging
-import requests
+import os
+import re
 from configparser import ConfigParser
+
+import requests
+import web
 
 logger = logging.getLogger("openlibrary.api")
 
@@ -96,7 +97,7 @@ class OpenLibrary:
         """Login to Open Library with given credentials."""
         headers = {'Content-Type': 'application/json'}
         try:
-            data = json.dumps(dict(username=username, password=password))
+            data = json.dumps({"username": username, "password": password})
             response = self._request(
                 '/account/login', method='POST', data=data, headers=headers
             )
@@ -196,7 +197,7 @@ class OpenLibrary:
         if 'limit' in q and q['limit'] is False:
             return unlimited_query(q)
         else:
-            response = self._request("/query.json", params=dict(query=json.dumps(q)))
+            response = self._request("/query.json", params={"query": json.dumps(q)})
             return unmarshal(response.json())
 
     def search(self, query, limit=10, offset=0, fields: list[str] | None = None):
@@ -282,10 +283,14 @@ def parse_datetime(value):
 
 
 class Text(str):
+    __slots__ = ()
+
     def __repr__(self):
         return "<text: %s>" % str.__repr__(self)
 
 
 class Reference(str):
+    __slots__ = ()
+
     def __repr__(self):
         return "<ref: %s>" % str.__repr__(self)

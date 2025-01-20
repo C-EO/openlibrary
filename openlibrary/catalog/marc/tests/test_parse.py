@@ -1,23 +1,25 @@
-import pytest
-
-from openlibrary.catalog.marc.parse import (
-    read_author_person,
-    read_edition,
-    NoTitle,
-    SeeAlsoAsTitle,
-)
-from openlibrary.catalog.marc.marc_binary import MarcBinary
-from openlibrary.catalog.marc.marc_xml import DataField, MarcXml
-from lxml import etree
-import os
 import json
 from collections.abc import Iterable
+from pathlib import Path
+
+import lxml.etree
+import pytest
+from lxml import etree
+
+from openlibrary.catalog.marc.marc_binary import MarcBinary
+from openlibrary.catalog.marc.marc_xml import DataField, MarcXml
+from openlibrary.catalog.marc.parse import (
+    NoTitle,
+    SeeAlsoAsTitle,
+    read_author_person,
+    read_edition,
+)
 
 collection_tag = '{http://www.loc.gov/MARC21/slim}collection'
 record_tag = '{http://www.loc.gov/MARC21/slim}record'
 
 xml_samples = [
-    '39002054008678.yale.edu',
+    '39002054008678_yale_edu',
     'flatlandromanceo00abbouoft',
     'nybc200247',
     'secretcodeofsucc00stjo',
@@ -46,6 +48,7 @@ bin_samples = [
     'ithaca_college_75002321.mrc',
     'lc_0444897283.mrc',
     'lc_1416500308.mrc',
+    'lesnoirsetlesrou0000garl_meta.mrc',
     'ocm00400866.mrc',
     'secretcodeofsucc00stjo_meta.mrc',
     'uoft_4351105_1626.mrc',
@@ -71,87 +74,102 @@ bin_samples = [
     'henrywardbeecher00robauoft_meta.mrc',
     'thewilliamsrecord_vol29b_meta.mrc',
     '13dipolarcycload00burk_meta.mrc',
+    '710_org_name_in_direct_order.mrc',
+    '830_series.mrc',
+    '880_alternate_script.mrc',
+    '880_table_of_contents.mrc',
+    '880_Nihon_no_chasho.mrc',
+    '880_publisher_unlinked.mrc',
+    '880_arabic_french_many_linkages.mrc',
+    'test-publish-sn-sl.mrc',
+    'test-publish-sn-sl-nd.mrc',
 ]
 
-test_data = "%s/test_data" % os.path.dirname(__file__)
+date_tests = [  # MARC, expected publish_date
+    ('9999_sd_dates.mrc', '[n.d.]'),
+    ('reprint_date_wrong_order.mrc', '2010'),
+    ('9999_with_correct_date_in_260.mrc', '2003'),
+]
+
+TEST_DATA = Path(__file__).with_name('test_data')
 
 
 class TestParseMARCXML:
     @pytest.mark.parametrize('i', xml_samples)
     def test_xml(self, i):
-        expect_filename = f"{test_data}/xml_expect/{i}.json"
-        path = f"{test_data}/xml_input/{i}_marc.xml"
-        element = etree.parse(open(path)).getroot()
+        expect_filepath = (TEST_DATA / 'xml_expect' / i).with_suffix('.json')
+        filepath = TEST_DATA / 'xml_input' / f'{i}_marc.xml'
+        element = etree.parse(
+            filepath, parser=lxml.etree.XMLParser(resolve_entities=False)
+        ).getroot()
         # Handle MARC XML collection elements in our test_data expectations:
         if element.tag == collection_tag and element[0].tag == record_tag:
             element = element[0]
         rec = MarcXml(element)
         edition_marc_xml = read_edition(rec)
         assert edition_marc_xml
-        j = json.load(open(expect_filename))
-        assert j, 'Unable to open test data: %s' % expect_filename
-        assert sorted(edition_marc_xml) == sorted(j), (
-            'Processed MARCXML fields do not match expectations in %s' % expect_filename
-        )
+        j = json.load(expect_filepath.open())
+        assert j, f'Unable to open test data: {expect_filepath}'
         msg = (
-            'Processed MARCXML values do not match expectations in %s' % expect_filename
+            f'Processed MARCXML values do not match expectations in {expect_filepath}.'
         )
+        assert sorted(edition_marc_xml) == sorted(j), msg
+        msg += ' Key: '
         for key, value in edition_marc_xml.items():
             if isinstance(value, Iterable):  # can not sort a list of dicts
-                assert len(value) == len(j[key]), msg
+                assert len(value) == len(j[key]), msg + key
                 for item in j[key]:
-                    assert item in value, msg
+                    assert item in value, msg + key
             else:
-                assert value == j[key], msg
+                assert value == j[key], msg + key
 
 
 class TestParseMARCBinary:
     @pytest.mark.parametrize('i', bin_samples)
     def test_binary(self, i):
-        expect_filename = f'{test_data}/bin_expect/{i}'.replace('.mrc', '.json')
-        with open(f'{test_data}/bin_input/{i}', 'rb') as f:
-            rec = MarcBinary(f.read())
+        expect_filepath = (TEST_DATA / 'bin_expect' / i).with_suffix('.json')
+        filepath = TEST_DATA / 'bin_input' / i
+        rec = MarcBinary(filepath.read_bytes())
         edition_marc_bin = read_edition(rec)
         assert edition_marc_bin
-        if not os.path.exists(expect_filename):
+        if not Path(expect_filepath).is_file():
             # Missing test expectations file. Create a template from the input, but fail the current test.
-            json.dump(edition_marc_bin, open(expect_filename, 'w'), indent=2)
-            assert (
-                False
-            ), 'Expectations file {} not found: template generated in {}. Please review and commit this file.'.format(
-                expect_filename, '/bin_expect'
+            data = json.dumps(edition_marc_bin, indent=2)
+            pytest.fail(
+                f'Expectations file {expect_filepath} not found: Please review and commit this JSON:\n{data}'
             )
-        j = json.load(open(expect_filename))
-        assert j, 'Unable to open test data: %s' % expect_filename
-        assert sorted(edition_marc_bin) == sorted(j), (
-            'Processed binary MARC fields do not match expectations in %s'
-            % expect_filename
-        )
-        msg = (
-            'Processed binary MARC values do not match expectations in %s'
-            % expect_filename
-        )
+        j = json.load(expect_filepath.open())
+        assert j, f'Unable to open test data: {expect_filepath}'
+        assert sorted(edition_marc_bin) == sorted(
+            j
+        ), f'Processed binary MARC fields do not match expectations in {expect_filepath}'
+        msg = f'Processed binary MARC values do not match expectations in {expect_filepath}'
         for key, value in edition_marc_bin.items():
             if isinstance(value, Iterable):  # can not sort a list of dicts
                 assert len(value) == len(j[key]), msg
                 for item in j[key]:
-                    assert item in value, msg
+                    assert item in value, f'{msg}. Key: {key}'
             else:
                 assert value == j[key], msg
 
     def test_raises_see_also(self):
-        filename = '%s/bin_input/talis_see_also.mrc' % test_data
-        with open(filename, 'rb') as f:
-            rec = MarcBinary(f.read())
+        filepath = TEST_DATA / 'bin_input' / 'talis_see_also.mrc'
+        rec = MarcBinary(filepath.read_bytes())
         with pytest.raises(SeeAlsoAsTitle):
             read_edition(rec)
 
     def test_raises_no_title(self):
-        filename = '%s/bin_input/talis_no_title2.mrc' % test_data
-        with open(filename, 'rb') as f:
-            rec = MarcBinary(f.read())
+        filepath = TEST_DATA / 'bin_input' / 'talis_no_title2.mrc'
+        rec = MarcBinary(filepath.read_bytes())
         with pytest.raises(NoTitle):
             read_edition(rec)
+
+    @pytest.mark.parametrize(('marcfile', 'expect'), date_tests)
+    def test_dates(self, marcfile, expect):
+        filepath = TEST_DATA / 'bin_input' / marcfile
+        rec = MarcBinary(filepath.read_bytes())
+        edition = read_edition(rec)
+        assert edition['publish_date'] == expect
 
 
 class TestParse:
@@ -159,9 +177,14 @@ class TestParse:
         xml_author = """
         <datafield xmlns="http://www.loc.gov/MARC21/slim" tag="100" ind1="1" ind2="0">
           <subfield code="a">Rein, Wilhelm,</subfield>
-          <subfield code="d">1809-1865</subfield>
+          <subfield code="d">1809-1865.</subfield>
         </datafield>"""
-        test_field = DataField(etree.fromstring(xml_author))
+        test_field = DataField(
+            None,
+            etree.fromstring(
+                xml_author, parser=lxml.etree.XMLParser(resolve_entities=False)
+            ),
+        )
         result = read_author_person(test_field)
 
         # Name order remains unchanged from MARC order

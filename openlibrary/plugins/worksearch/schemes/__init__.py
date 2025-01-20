@@ -1,8 +1,9 @@
 import logging
-from typing import Callable, Optional, Union
+from collections.abc import Callable
 
 import luqum.tree
 from luqum.exceptions import ParseError
+
 from openlibrary.solr.query_utils import (
     escape_unknown_fields,
     fully_escape_query,
@@ -17,16 +18,18 @@ class SearchScheme:
     universe: list[str]
     # All actual solr fields that can be in a user query
     all_fields: set[str]
+    # Fields that can be read, but which aren't stored in solr
+    non_solr_fields: set[str]
     # These fields are fetched for facets and can also be url params
     facet_fields: set[str]
     # Mapping of user-only fields to solr fields
     field_name_map: dict[str, str]
     # Mapping of user sort to solr sort
-    sorts: dict[str, Union[str, Callable[[], str]]]
+    sorts: dict[str, str | Callable[[], str]]
     # Default
     default_fetched_fields: set[str]
     # Fields that should be rewritten
-    facet_rewrites: dict[tuple[str, str], Union[str, Callable[[], str]]]
+    facet_rewrites: dict[tuple[str, str], str | Callable[[], str]]
 
     def is_search_field(self, field: str):
         return field in self.all_fields or field in self.field_name_map
@@ -44,17 +47,27 @@ class SearchScheme:
         >>> scheme.process_user_sort('random')
         'random_1 asc'
         >>> scheme.process_user_sort('random_custom_seed')
-        'random_custom_seed asc'
+        'random_1_custom_seed asc'
         >>> scheme.process_user_sort('random_custom_seed desc')
-        'random_custom_seed desc'
+        'random_1_custom_seed desc'
         >>> scheme.process_user_sort('random_custom_seed asc')
-        'random_custom_seed asc'
+        'random_1_custom_seed asc'
         """
 
-        def process_individual_sort(sort: str):
-            if sort.startswith('random_'):
+        def process_individual_sort(sort: str) -> str:
+            if sort.startswith(('random_', 'random.hourly_', 'random.daily_')):
                 # Allow custom randoms; so anything random_* is allowed
-                return sort if ' ' in sort else f'{sort} asc'
+                # Also Allow custom time randoms to allow carousels with overlapping
+                # books to have a fresh ordering when on the same collection
+                sort_order: str | None = None
+                if ' ' in sort:
+                    sort, sort_order = sort.split(' ', 1)
+                random_type, random_seed = sort.split('_', 1)
+                solr_sort = self.sorts[random_type]
+                solr_sort_str = solr_sort() if callable(solr_sort) else solr_sort
+                solr_sort_field, solr_sort_order = solr_sort_str.split(' ', 1)
+                sort_order = sort_order or solr_sort_order
+                return f'{solr_sort_field}_{random_seed} {sort_order}'
             else:
                 solr_sort = self.sorts[sort]
                 return solr_sort() if callable(solr_sort) else solr_sort
@@ -100,7 +113,7 @@ class SearchScheme:
     ) -> luqum.tree.Item:
         return q_tree
 
-    def build_q_from_params(self, params: dict) -> Optional[str]:
+    def build_q_from_params(self, params: dict) -> str | None:
         return None
 
     def q_to_solr_params(
@@ -110,3 +123,6 @@ class SearchScheme:
         cur_solr_params: list[tuple[str, str]],
     ) -> list[tuple[str, str]]:
         return [('q', q)]
+
+    def add_non_solr_fields(self, solr_fields: set[str], solr_result: dict) -> None:
+        raise NotImplementedError

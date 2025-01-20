@@ -14,17 +14,19 @@ batch_size=1000
 dry_run=True
 ol_config=/path/to/openlibrary.yml
 """
+
 import argparse
 import time
-
 from configparser import ConfigParser
 from pathlib import Path
 
-import _init_path  # noqa: F401  Imported for its side effect of setting PYTHONPATH
+import _init_path  # noqa: F401 Imported for its side effect of setting PYTHONPATH
 
 from openlibrary.config import load_config
+from openlibrary.core.edits import (
+    CommunityEditsQueue,  # noqa: F401 side effects may be needed
+)
 from openlibrary.core.imports import ImportItem
-from openlibrary.core.edits import CommunityEditsQueue
 
 
 class DeleteImportItemJob:

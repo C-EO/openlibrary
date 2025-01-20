@@ -1,9 +1,15 @@
-from pymarc import MARC8ToUnicode
+from collections.abc import Iterator
 from unicodedata import normalize
 
-from openlibrary.catalog.marc import mnemonics
-from openlibrary.catalog.marc.marc_base import MarcBase, MarcException, BadMARC
+from pymarc import MARC8ToUnicode
 
+from openlibrary.catalog.marc import mnemonics
+from openlibrary.catalog.marc.marc_base import (
+    BadMARC,
+    MarcBase,
+    MarcException,
+    MarcFieldBase,
+)
 
 marc8 = MARC8ToUnicode(quiet=True)
 
@@ -20,37 +26,36 @@ def handle_wrapped_lines(_iter):
     """
     cur_lines = []
     cur_tag = None
-    maybe_wrap = False
-    for t, l in _iter:
-        if len(l) > 500 and l.endswith(b'++\x1e'):
-            assert not cur_tag or cur_tag == t
-            cur_tag = t
-            cur_lines.append(l)
+    for tag, line in _iter:
+        if len(line) > 500 and line.endswith(b'++\x1e'):
+            assert not cur_tag or cur_tag == tag
+            cur_tag = tag
+            cur_lines.append(line)
             continue
         if cur_lines:
             yield cur_tag, cur_lines[0][:-3] + b''.join(
                 i[2:-3] for i in cur_lines[1:]
-            ) + l[2:]
+            ) + line[2:]
             cur_tag = None
             cur_lines = []
             continue
-        yield t, l
+        yield tag, line
     assert not cur_lines
 
 
-class BinaryDataField:
-    def __init__(self, rec, line):
+class BinaryDataField(MarcFieldBase):
+    def __init__(self, rec, line: bytes) -> None:
         """
         :param rec MarcBinary:
         :param line bytes: Content of a MARC21 binary field
         """
-        self.rec = rec
+        self.rec: MarcBinary = rec
         if line:
             while line[-2] == b'\x1e'[0]:  # ia:engineercorpsofhe00sher
                 line = line[:-1]
         self.line = line
 
-    def translate(self, data):
+    def translate(self, data: bytes) -> str:
         """
         :param data bytes: raw MARC21 field data content, in either utf8 or marc8 encoding
         :rtype: str
@@ -61,68 +66,26 @@ class BinaryDataField:
             return marc8.translate(data)
         return normalize('NFC', data.decode('utf8'))
 
-    def ind1(self):
-        return self.line[0]
+    def ind1(self) -> str:
+        return chr(self.line[0])
 
-    def ind2(self):
-        return self.line[1]
+    def ind2(self) -> str:
+        return chr(self.line[1])
 
-    def remove_brackets(self):
-        # TODO: remove this from MARCBinary,
-        # stripping of characters should be done
-        # from strings in openlibrary.catalog.marc.parse
-        # not on the raw binary structure.
-        # The intent is to remove initial and final square brackets
-        # from field content. Try str.strip('[]')
-        line = self.line
-        if line[4] == b'['[0] and line[-2] == b']'[0]:
-            last = line[-1]
-            last_byte = bytes([last]) if isinstance(last, int) else last
-            self.line = b''.join([line[0:4], line[5:-2], last_byte])
-
-    def get_subfields(self, want):
-        """
-        :rtype: collections.Iterable[tuple]
-        """
-        want = set(want)
-        for i in self.line[3:-1].split(b'\x1f'):
-            code = i and (chr(i[0]) if isinstance(i[0], int) else i[0])
-            if i and code in want:
-                yield code, self.translate(i[1:])
-
-    def get_contents(self, want):
-        contents = {}
-        for k, v in self.get_subfields(want):
-            if v:
-                contents.setdefault(k, []).append(v)
-        return contents
-
-    def get_subfield_values(self, want):
-        """
-        :rtype: list[str]
-        """
-        return [v for k, v in self.get_subfields(want)]
-
-    def get_all_subfields(self):
+    def get_all_subfields(self) -> Iterator[tuple[str, str]]:
         for i in self.line[3:-1].split(b'\x1f'):
             if i:
                 j = self.translate(i)
                 yield j[0], j[1:]
 
-    def get_lower_subfields(self):
-        for k, v in self.get_all_subfields():
-            if k.islower():
-                yield v
-
 
 class MarcBinary(MarcBase):
-    def __init__(self, data):
-        # def __init__(self, data: bytes) -> None:  # Python 3 type hint
+    def __init__(self, data: bytes) -> None:
         try:
             assert len(data)
             assert isinstance(data, bytes)
             length = int(data[:5])
-        except Exception:
+        except AssertionError:
             raise BadMARC("No MARC data found")
         if len(data) != length:
             raise BadLength(
@@ -147,24 +110,18 @@ class MarcBinary(MarcBase):
         )
         return iter_dir
 
-    def leader(self):
-        """
-        :rtype: str
-        """
+    def leader(self) -> str:
         return self.data[:24].decode('utf-8', errors='replace')
 
-    def marc8(self):
+    def marc8(self) -> bool:
         """
         Is this binary MARC21 MARC8 encoded? (utf-8 if False)
-
-        :rtype: bool
         """
         return self.leader()[9] == ' '
 
-    def all_fields(self):
-        return self.read_fields()
-
-    def read_fields(self, want=None):
+    def read_fields(
+        self, want: list[str] | None = None
+    ) -> Iterator[tuple[str, str | BinaryDataField]]:
         """
         :param want list | None: list of str, 3 digit MARC field ids, or None for all fields (no limit)
         :rtype: generator
@@ -203,7 +160,6 @@ class MarcBinary(MarcBase):
         :rtype: list
         :return: list of tuples (MARC tag (str), field contents ... bytes or str?)
         """
-        want = set(want)
         return [
             (line[:3].decode(), self.get_tag_line(line))
             for line in self.iter_directory()
@@ -224,12 +180,7 @@ class MarcBinary(MarcBase):
         except IndexError:
             pass
         tag_line = data[offset + 1 : offset + length + 1]
-        if line[0:2] != '00':
-            # marc_western_washington_univ/wwu_bibs.mrc_revrev.mrc:636441290:1277
-            if tag_line[1:8] == b'{llig}\x1f':
-                tag_line = tag_line[0] + '\uFE20' + tag_line[7:]
+        # marc_western_washington_univ/wwu_bibs.mrc_revrev.mrc:636441290:1277
+        if line[0:2] != '00' and tag_line[1:8] == b'{llig}\x1f':
+            tag_line = tag_line[0] + '\uFE20' + tag_line[7:]
         return tag_line
-
-    def decode_field(self, field):
-        # noop on MARC binary
-        return field

@@ -1,44 +1,60 @@
-import functools
-from typing import Any
-from collections.abc import Iterable, Iterator
-import unicodedata
-
-import web
-import json
-import babel
-import babel.core
-import babel.dates
-from babel.lists import format_list
-from collections import defaultdict
-import re
-import random
-import xml.etree.ElementTree as etree
 import datetime
+import functools
+import json
 import logging
-from html.parser import HTMLParser
-
-import requests
-
-from html import unescape
+import os
+import re
+import unicodedata
 import urllib
-from collections.abc import MutableMapping
+import xml.etree.ElementTree as ET
+from collections import defaultdict
+from collections.abc import Callable, Generator, Iterable, Iterator, MutableMapping
+from html import unescape
+from html.parser import HTMLParser
+from typing import TYPE_CHECKING, Any, Literal, Protocol, TypeVar
 from urllib.parse import (
     parse_qs,
-    urlencode as parse_urlencode,
     urlparse,
     urlunparse,
 )
+from urllib.parse import (
+    urlencode as parse_urlencode,
+)
+
+import babel
+import babel.core
+import babel.dates
+import requests
+import web
+import yaml
+from babel.lists import format_list
+from web.template import TemplateResult
+from web.utils import Storage
 
 from infogami import config
-from infogami.utils import view, delegate, stats
-from infogami.utils.view import render, get_template, public, query_param
+from infogami.infobase.client import Changeset, Nothing, Thing, storify
+from infogami.utils import delegate, stats, view
+from infogami.utils.context import InfogamiContext, context
 from infogami.utils.macro import macro
-from infogami.utils.context import context
-from infogami.infobase.client import Thing, Changeset, storify
-
+from infogami.utils.view import (
+    get_template,
+    public,
+    render,
+)
+from openlibrary.core import cache
 from openlibrary.core.helpers import commify, parse_datetime, truncate
 from openlibrary.core.middleware import GZipMiddleware
-from openlibrary.core import cache
+
+if TYPE_CHECKING:
+    from openlibrary.plugins.upstream.models import (
+        Author,
+        Edition,
+        Work,
+    )
+
+
+STRIP_CHARS = ",'\" "
+REPLACE_CHARS = "]["
 
 
 class LanguageMultipleMatchError(Exception):
@@ -58,6 +74,9 @@ class LanguageNoMatchError(Exception):
 class MultiDict(MutableMapping):
     """Ordered Dictionary that can store multiple values.
 
+    Must be initialized without an `items` parameter, or `items` must be an
+    iterable of two-value sequences. E.g., items=(('a', 1), ('b', 2))
+
     >>> d = MultiDict()
     >>> d['x'] = 1
     >>> d['x'] = 2
@@ -76,10 +95,12 @@ class MultiDict(MutableMapping):
     [('x', 1), ('x', 2), ('y', 3)]
     >>> list(d.multi_items())
     [('x', [1, 2]), ('y', [3])]
+    >>> d1 = MultiDict(items=(('a', 1), ('b', 2)), a=('x', 10, 11, 12))
+    [('a', [1, ('x', 10, 11, 12)]), ('b', [2])]
     """
 
-    def __init__(self, items=(), **kw):
-        self._items = []
+    def __init__(self, items: Iterable[tuple[Any, Any]] = (), **kw) -> None:
+        self._items: list = []
 
         for k, v in items:
             self[k] = v
@@ -91,7 +112,7 @@ class MultiDict(MutableMapping):
         else:
             raise KeyError(key)
 
-    def __setitem__(self, key, value):
+    def __setitem__(self, key: str, value: Any) -> None:
         self._items.append((key, value))
 
     def __delitem__(self, key):
@@ -107,18 +128,21 @@ class MultiDict(MutableMapping):
         return [v for k, v in self._items if k == key]
 
     def keys(self):
-        return [k for k, v in self._items]
+        return [k for k, _ in self._items]
 
-    def values(self):
-        return [v for k, v in self._items]
+    # Subclasses of MutableMapping should return a dictionary view object for
+    # the values() method, but this implementation returns a list.
+    # https://docs.python.org/3/library/stdtypes.html#dict-views
+    def values(self) -> list[Any]:  # type: ignore[override]
+        return [v for _, v in self._items]
 
     def items(self):
         return self._items[:]
 
-    def multi_items(self):
-        """Returns items as tuple of key and a list of values."""
+    def multi_items(self) -> list[tuple[str, list]]:
+        """Returns items as list of tuples of key and a list of values."""
         items = []
-        d = {}
+        d: dict = {}
 
         for k, v in self._items:
             if k not in d:
@@ -130,7 +154,7 @@ class MultiDict(MutableMapping):
 
 @macro
 @public
-def render_template(name, *a, **kw):
+def render_template(name: str, *a, **kw) -> TemplateResult:
     if "." in name:
         name = name.rsplit(".", 1)[0]
     return render[name](*a, **kw)
@@ -144,14 +168,24 @@ def kebab_case(upper_camel_case: str) -> str:
     >>> kebab_case('HelloWorld')
     'hello-world'
     >>> kebab_case("MergeUI")
-    'merge-u-i'
+    'merge-ui'
     """
-    parts = re.findall(r'[A-Z][^A-Z]*', upper_camel_case)
-    return '-'.join(parts).lower()
+    # Match positions where a lowercase letter is followed by an uppercase letter,
+    # or an uppercase letter is followed by another uppercase followed by a lowercase letter.
+    kebab = re.sub(
+        r'([a-z])([A-Z])', r'\1-\2', upper_camel_case
+    )  # Handle camel case boundaries
+    kebab = re.sub(r'([A-Z])([A-Z][a-z])', r'\1-\2', kebab)  # Handle acronyms
+    return kebab.lower()
 
 
 @public
-def render_component(name: str, attrs: dict | None = None, json_encode: bool = True):
+def render_component(
+    name: str,
+    attrs: dict | None = None,
+    json_encode: bool = True,
+    asyncDefer=False,
+) -> str:
     """
     :param str name: Name of the component (excluding extension)
     :param dict attrs: attributes to add to the component element
@@ -161,28 +195,55 @@ def render_component(name: str, attrs: dict | None = None, json_encode: bool = T
     attrs = attrs or {}
     attrs_str = ''
     for key, val in attrs.items():
-        if json_encode and isinstance(val, dict) or isinstance(val, list):
+        if (json_encode and isinstance(val, dict)) or isinstance(val, list):
             val = json.dumps(val)
             # On the Vue side use decodeURIComponent to decode
             val = urllib.parse.quote(val)
         attrs_str += f' {key}="{val}"'
     html = ''
-    included = web.ctx.setdefault("included-components", [])
 
-    if len(included) == 0:
-        # Need to include Vue
-        html += '<script src="%s"></script>' % static_url('build/vue.js')
-
-    if name not in included:
-        url = static_url('build/components/production/ol-%s.min.js' % name)
-        html += '<script src="%s"></script>' % url
+    if name not in (included := web.ctx.setdefault("included-components", [])):
+        url = static_url('build/components/production/ol-%s.js' % name)
+        script_attrs = '' if not asyncDefer else 'async defer'
+        html += f'<script {script_attrs} src="{url}"></script>'
         included.append(name)
 
-    html += '<ol-{name} {attrs}></ol-{name}>'.format(
-        name=kebab_case(name),
-        attrs=attrs_str,
-    )
+    html += f'<ol-{kebab_case(name)} {attrs_str}></ol-{kebab_case(name)}>'
     return html
+
+
+def render_macro(name, args, **kwargs):
+    return dict(web.template.Template.globals['macros'][name](*args, **kwargs))
+
+
+@public
+def render_cached_macro(name: str, args: tuple, **kwargs):
+    from openlibrary.plugins.openlibrary.home import caching_prethread
+
+    def get_key_prefix():
+        lang = web.ctx.lang
+        key_prefix = f'{name}.{lang}'
+        if web.cookies().get('pd', False):
+            key_prefix += '.pd'
+        if web.cookies().get('sfw', ''):
+            key_prefix += '.sfw'
+        return key_prefix
+
+    five_minutes = 5 * 60
+    key_prefix = get_key_prefix()
+    mc = cache.memcache_memoize(
+        render_macro,
+        key_prefix=key_prefix,
+        timeout=five_minutes,
+        prethread=caching_prethread(),
+        hash_args=True,  # this avoids cache key length overflow
+    )
+
+    try:
+        page = mc(name, args, **kwargs)
+        return web.template.TemplateResult(page)
+    except (ValueError, TypeError) as e:
+        return '<span>Failed to render macro</span>'
 
 
 @public
@@ -192,12 +253,14 @@ def get_error(name, *args):
 
 
 @public
-def get_message(name, *args):
+def get_message(name: str, *args) -> str:
     """Return message with given name from messages.tmpl template"""
     return get_message_from_template("messages", name, args)
 
 
-def get_message_from_template(template_name, name, args):
+def get_message_from_template(
+    template_name: str, name: str, args: tuple[(Any, ...)]
+) -> str:
     d = render_template(template_name).get("messages", {})
     msg = d.get(name) or name.lower().replace("_", " ")
 
@@ -227,7 +290,7 @@ def list_recent_pages(path, limit=100, offset=0):
 
 
 @public
-def commify_list(items: Iterable[Any]):
+def commify_list(items: Iterable[Any]) -> str:
     # Not sure why lang is sometimes ''
     lang = web.ctx.lang or 'en'
     # If the list item is a template/html element, we strip it
@@ -236,11 +299,11 @@ def commify_list(items: Iterable[Any]):
 
 
 @public
-def json_encode(d):
+def json_encode(d) -> str:
     return json.dumps(d)
 
 
-def unflatten(d, separator="--"):
+def unflatten(d: dict, separator: str = "--") -> dict:
     """Convert flattened data into nested form.
 
     >>> unflatten({"a": 1, "b--x": 2, "b--y": 3, "c--0": 4, "c--1": 5})
@@ -250,14 +313,14 @@ def unflatten(d, separator="--"):
 
     """
 
-    def isint(k):
+    def isint(k: Any) -> bool:
         try:
             int(k)
             return True
         except ValueError:
             return False
 
-    def setvalue(data, k, v):
+    def setvalue(data: dict, k, v) -> None:
         if '--' in k:
             k, k2 = k.split(separator, 1)
             setvalue(data.setdefault(k, {}), k2, v)
@@ -270,11 +333,11 @@ def unflatten(d, separator="--"):
             if all(isint(k) for k in d):
                 return [makelist(d[k]) for k in sorted(d, key=int)]
             else:
-                return web.storage((k, makelist(v)) for k, v in d.items())
+                return Storage((k, makelist(v)) for k, v in d.items())
         else:
             return d
 
-    d2 = {}
+    d2: dict = {}
     for k, v in d.items():
         setvalue(d2, k, v)
     return makelist(d2)
@@ -311,7 +374,7 @@ def fuzzy_find(value, options, stopwords=None):
 
 
 @public
-def radio_input(checked=False, **params):
+def radio_input(checked=False, **params) -> str:
     params['type'] = 'radio'
     if checked:
         params['checked'] = "checked"
@@ -326,10 +389,15 @@ def get_coverstore_url() -> str:
 
 @public
 def get_coverstore_public_url() -> str:
-    return config.get('coverstore_public_url', get_coverstore_url()).rstrip('/')
+    if OL_COVERSTORE_PUBLIC_URL := os.environ.get('OL_COVERSTORE_PUBLIC_URL'):
+        return OL_COVERSTORE_PUBLIC_URL.rstrip('/')
+    else:
+        return config.get('coverstore_public_url', get_coverstore_url()).rstrip('/')
 
 
-def _get_changes_v1_raw(query, revision=None):
+def _get_changes_v1_raw(
+    query: dict[str, str | int], revision: int | None = None
+) -> list[Storage]:
     """Returns the raw versions response.
 
     Revision is taken as argument to make sure a new cache entry is used when a new revision of the page is created.
@@ -344,17 +412,19 @@ def _get_changes_v1_raw(query, revision=None):
         v.author = v.author and v.author.key
 
         # XXX-Anand: hack to avoid too big data to be stored in memcache.
-        # v.changes is not used and it contrinutes to memcache bloat in a big way.
+        # v.changes is not used and it contributes to memcache bloat in a big way.
         v.changes = '[]'
 
     return versions
 
 
-def get_changes_v1(query, revision=None):
+def get_changes_v1(
+    query: dict[str, str | int], revision: int | None = None
+) -> list[Storage]:
     # uses the cached function _get_changes_v1_raw to get the raw data
     # and processes to before returning.
     def process(v):
-        v = web.storage(v)
+        v = Storage(v)
         v.created = parse_datetime(v.created)
         v.author = v.author and web.ctx.site.get(v.author, lazy=True)
         return v
@@ -362,7 +432,9 @@ def get_changes_v1(query, revision=None):
     return [process(v) for v in _get_changes_v1_raw(query, revision)]
 
 
-def _get_changes_v2_raw(query, revision=None):
+def _get_changes_v2_raw(
+    query: dict[str, str | int], revision: int | None = None
+) -> list[dict]:
     """Returns the raw recentchanges response.
 
     Revision is taken as argument to make sure a new cache entry is used when a new revision of the page is created.
@@ -378,7 +450,9 @@ def _get_changes_v2_raw(query, revision=None):
 # _get_changes_v2_raw = cache.memcache_memoize(_get_changes_v2_raw, key_prefix="upstream._get_changes_v2_raw", timeout=10*60)
 
 
-def get_changes_v2(query, revision=None):
+def get_changes_v2(
+    query: dict[str, str | int], revision: int | None = None
+) -> list[Changeset]:
     page = web.ctx.site.get(query['key'])
 
     def first(seq, default=None):
@@ -411,13 +485,15 @@ def get_changes_v2(query, revision=None):
     return [process_change(c) for c in changes]
 
 
-def get_changes(query, revision=None):
+def get_changes(
+    query: dict[str, str | int], revision: int | None = None
+) -> list[Changeset]:
     return get_changes_v2(query, revision=revision)
 
 
 @public
-def get_history(page):
-    h = web.storage(
+def get_history(page: "Work | Author | Edition") -> Storage:
+    h = Storage(
         revision=page.revision, lastest_revision=page.revision, created=page.created
     )
     if h.revision < 5:
@@ -443,12 +519,13 @@ def get_version(key, revision):
 
 
 @public
-def get_recent_author(doc):
+def get_recent_author(doc: "Work") -> "Thing | None":
     versions = get_changes_v1(
         {'key': doc.key, 'limit': 1, "offset": 0}, revision=doc.revision
     )
     if versions:
         return versions[0].author
+    return None
 
 
 @public
@@ -466,61 +543,67 @@ def get_locale():
         return babel.Locale("en")
 
 
+class HasGetKeyRevision(Protocol):
+    key: str
+    revision: int
+
+    def get(self, item) -> Any: ...
+
+
 @public
-def process_version(v):
+def process_version(v: HasGetKeyRevision) -> HasGetKeyRevision:
     """Looks at the version and adds machine_comment required for showing "View MARC" link."""
     comments = [
         "found a matching marc record",
         "add publisher and source",
     ]
+
     if v.key.startswith('/books/') and not v.get('machine_comment'):
         thing = v.get('thing') or web.ctx.site.get(v.key, v.revision)
-        if (
-            thing.source_records
-            and v.revision == 1
-            or (v.comment and v.comment.lower() in comments)
+        if (thing.source_records and v.revision == 1) or (
+            v.comment and v.comment.lower() in comments  # type: ignore [attr-defined]
         ):
             marc = thing.source_records[-1]
             if marc.startswith('marc:'):
-                v.machine_comment = marc[len("marc:") :]
+                v.machine_comment = marc[len("marc:") :]  # type: ignore [attr-defined]
             else:
-                v.machine_comment = marc
+                v.machine_comment = marc  # type: ignore [attr-defined]
     return v
 
 
 @public
-def is_thing(t):
+def is_thing(t) -> bool:
     return isinstance(t, Thing)
 
 
 @public
-def putctx(key, value):
+def putctx(key: str, value: str | bool) -> str:
     """Save a value in the context."""
     context[key] = value
     return ""
 
 
 class Metatag:
-    def __init__(self, tag="meta", **attrs):
+    def __init__(self, tag: str = "meta", **attrs) -> None:
         self.tag = tag
         self.attrs = attrs
 
-    def __str__(self):
+    def __str__(self) -> str:
         attrs = ' '.join(f'{k}="{websafe(v)}"' for k, v in self.attrs.items())
         return f'<{self.tag} {attrs} />'
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return 'Metatag(%s)' % str(self)
 
 
 @public
-def add_metatag(tag="meta", **attrs):
+def add_metatag(tag: str = "meta", **attrs) -> None:
     context.setdefault('metatags', [])
     context.metatags.append(Metatag(tag, **attrs))
 
 
 @public
-def url_quote(text):
+def url_quote(text: str | bytes) -> str:
     if isinstance(text, str):
         text = text.encode('utf8')
     return urllib.parse.quote_plus(text)
@@ -542,12 +625,14 @@ def urlencode(dict_or_list_of_tuples: dict | list[tuple[str, Any]]) -> str:
 
 
 @public
-def entity_decode(text):
+def entity_decode(text: str) -> str:
     return unescape(text)
 
 
 @public
-def set_share_links(url='#', title='', view_context=None):
+def set_share_links(
+    url: str = '#', title: str = '', view_context: InfogamiContext | None = None
+) -> None:
     """
     Constructs list share links for social platforms and assigns to view context attribute
 
@@ -572,61 +657,14 @@ def set_share_links(url='#', title='', view_context=None):
             'url': f'https://pinterest.com/pin/create/link/?url={encoded_url}&description={text}',
         },
     ]
-    view_context.share_links = links
+    if view_context is not None:
+        view_context.share_links = links
 
 
-def pad(seq, size, e=None):
-    """
-    >>> pad([1, 2], 4, 0)
-    [1, 2, 0, 0]
-    """
-    seq = seq[:]
-    while len(seq) < size:
-        seq.append(e)
-    return seq
+T = TypeVar('T')
 
 
-def parse_toc_row(line):
-    """Parse one row of table of contents.
-
-    >>> def f(text):
-    ...     d = parse_toc_row(text)
-    ...     return (d['level'], d['label'], d['title'], d['pagenum'])
-    ...
-    >>> f("* chapter 1 | Welcome to the real world! | 2")
-    (1, 'chapter 1', 'Welcome to the real world!', '2')
-    >>> f("Welcome to the real world!")
-    (0, '', 'Welcome to the real world!', '')
-    >>> f("** | Welcome to the real world! | 2")
-    (2, '', 'Welcome to the real world!', '2')
-    >>> f("|Preface | 1")
-    (0, '', 'Preface', '1')
-    >>> f("1.1 | Apple")
-    (0, '1.1', 'Apple', '')
-    """
-    RE_LEVEL = web.re_compile(r"(\**)(.*)")
-    level, text = RE_LEVEL.match(line.strip()).groups()
-
-    if "|" in text:
-        tokens = text.split("|", 2)
-        label, title, page = pad(tokens, 3, '')
-    else:
-        title = text
-        label = page = ""
-
-    return web.storage(
-        level=len(level), label=label.strip(), title=title.strip(), pagenum=page.strip()
-    )
-
-
-def parse_toc(text):
-    """Parses each line of toc"""
-    if text is None:
-        return []
-    return [parse_toc_row(line) for line in text.splitlines() if line.strip(" |")]
-
-
-def safeget(func):
+def safeget(func: Callable[[], T], default=None) -> T:
     """
     TODO: DRY with solrbuilder copy
     >>> safeget(lambda: {}['foo'])
@@ -639,7 +677,7 @@ def safeget(func):
     try:
         return func()
     except (KeyError, IndexError, TypeError):
-        return None
+        return default
 
 
 def strip_accents(s: str) -> str:
@@ -656,51 +694,54 @@ def strip_accents(s: str) -> str:
 
 
 @functools.cache
-def get_languages() -> dict:
-    keys = web.ctx.site.things({"type": "/type/language", "limit": 1000})
-    return {lang.key: lang for lang in web.ctx.site.get_many(keys)}
+def get_languages(limit: int = 1000) -> dict:
+    keys = web.ctx.site.things({"type": "/type/language", "limit": limit})
+    return {
+        lang.key: lang for lang in web.ctx.site.get_many(keys) if not lang.deprecated
+    }
 
 
-def autocomplete_languages(prefix: str) -> Iterator[web.storage]:
+def word_prefix_match(prefix: str, text: str) -> bool:
+    # Compare to each word of `text` for more accurate matching
+    # Eg. the prefix 'greek' will match with 'ancient greek' as well as 'greek'
+    return any(piece.startswith(prefix) for piece in text.split())
+
+
+def autocomplete_languages(prefix: str) -> Iterator[Storage]:
     """
-    Given, e.g., "English", this returns an iterator of:
+    Given, e.g., "English", this returns an iterator of the following:
         <Storage {'key': '/languages/ang', 'code': 'ang', 'name': 'English, Old (ca. 450-1100)'}>
+        <Storage {'key': '/languages/cpe', 'code': 'cpe', 'name': 'Creoles and Pidgins, English-based (Other)'}>
         <Storage {'key': '/languages/eng', 'code': 'eng', 'name': 'English'}>
         <Storage {'key': '/languages/enm', 'code': 'enm', 'name': 'English, Middle (1100-1500)'}>
     """
 
-    def normalize(s: str) -> str:
+    def get_names_to_try(lang: dict) -> Generator[str | None, None, None]:
+        # For each language attempt to match based on:
+        # The language's name translated into the current user's chosen language (user_lang)
+        user_lang = web.ctx.lang or 'en'
+        yield safeget(lambda: lang['name_translated'][user_lang][0])
+
+        # The language's name translated into its native name (lang_iso_code)
+        lang_iso_code = safeget(lambda: lang['identifiers']['iso_639_1'][0])
+        yield safeget(lambda: lang['name_translated'][lang_iso_code][0])
+
+        # The language's name as it was fetched from get_languages() (None)
+        yield lang['name']
+
+    def normalize_for_search(s: str) -> str:
         return strip_accents(s).lower()
 
-    prefix = normalize(prefix)
-    user_lang = web.ctx.lang or 'en'
+    prefix = normalize_for_search(prefix)
     for lang in get_languages().values():
-        user_lang_name = safeget(lambda: lang['name_translated'][user_lang][0])
-        if user_lang_name and normalize(user_lang_name).startswith(prefix):
-            yield web.storage(
-                key=lang.key,
-                code=lang.code,
-                name=user_lang_name,
-            )
-            continue
-
-        lang_iso_code = safeget(lambda: lang['identifiers']['iso_639_1'][0])
-        native_lang_name = safeget(lambda: lang['name_translated'][lang_iso_code][0])
-        if native_lang_name and normalize(native_lang_name).startswith(prefix):
-            yield web.storage(
-                key=lang.key,
-                code=lang.code,
-                name=native_lang_name,
-            )
-            continue
-
-        if normalize(lang.name).startswith(prefix):
-            yield web.storage(
-                key=lang.key,
-                code=lang.code,
-                name=lang.name,
-            )
-            continue
+        for lang_name in get_names_to_try(lang):
+            if lang_name and word_prefix_match(prefix, normalize_for_search(lang_name)):
+                yield Storage(
+                    key=lang.key,
+                    code=lang.code,
+                    name=lang_name,
+                )
+                break
 
 
 def get_abbrev_from_full_lang_name(input_lang_name: str, languages=None) -> str:
@@ -741,15 +782,366 @@ def get_abbrev_from_full_lang_name(input_lang_name: str, languages=None) -> str:
     return target_abbrev
 
 
-def get_language(lang_or_key: Thing | str) -> Thing | None:
+def get_language(lang_or_key: str) -> "None | Thing | Nothing":
     if isinstance(lang_or_key, str):
         return get_languages().get(lang_or_key)
     else:
         return lang_or_key
 
 
+def get_marc21_language(language: str) -> str | None:
+    """
+    Get a three character MARC 21 language abbreviation from another abbreviation format:
+        https://www.loc.gov/marc/languages/language_code.html
+        https://www.loc.gov/standards/iso639-2/php/code_list.php
+
+    Note: This does not contain all possible languages/abbreviations and is
+    biased towards abbreviations in ISBNdb.
+    """
+    language_map = {
+        'ab': 'abk',
+        'af': 'afr',
+        'afr': 'afr',
+        'afrikaans': 'afr',
+        'agq': 'agq',
+        'ak': 'aka',
+        'akk': 'akk',
+        'alb': 'alb',
+        'alg': 'alg',
+        'am': 'amh',
+        'amh': 'amh',
+        'ang': 'ang',
+        'apa': 'apa',
+        'ar': 'ara',
+        'ara': 'ara',
+        'arabic': 'ara',
+        'arc': 'arc',
+        'arm': 'arm',
+        'asa': 'asa',
+        'aus': 'aus',
+        'ave': 'ave',
+        'az': 'aze',
+        'aze': 'aze',
+        'ba': 'bak',
+        'baq': 'baq',
+        'be': 'bel',
+        'bel': 'bel',
+        'bem': 'bem',
+        'ben': 'ben',
+        'bengali': 'ben',
+        'bg': 'bul',
+        'bis': 'bis',
+        'bislama': 'bis',
+        'bm': 'bam',
+        'bn': 'ben',
+        'bos': 'bos',
+        'br': 'bre',
+        'bre': 'bre',
+        'breton': 'bre',
+        'bul': 'bul',
+        'bulgarian': 'bul',
+        'bur': 'bur',
+        'ca': 'cat',
+        'cat': 'cat',
+        'catalan': 'cat',
+        'cau': 'cau',
+        'cel': 'cel',
+        'chi': 'chi',
+        'chinese': 'chi',
+        'chu': 'chu',
+        'cop': 'cop',
+        'cor': 'cor',
+        'cos': 'cos',
+        'cpe': 'cpe',
+        'cpf': 'cpf',
+        'cre': 'cre',
+        'croatian': 'hrv',
+        'crp': 'crp',
+        'cs': 'cze',
+        'cy': 'wel',
+        'cze': 'cze',
+        'czech': 'cze',
+        'da': 'dan',
+        'dan': 'dan',
+        'danish': 'dan',
+        'de': 'ger',
+        'dut': 'dut',
+        'dutch': 'dut',
+        'dv': 'div',
+        'dz': 'dzo',
+        'ebu': 'ceb',
+        'egy': 'egy',
+        'el': 'gre',
+        'en': 'eng',
+        'en_us': 'eng',
+        'enf': 'enm',
+        'eng': 'eng',
+        'english': 'eng',
+        'enm': 'enm',
+        'eo': 'epo',
+        'epo': 'epo',
+        'es': 'spa',
+        'esk': 'esk',
+        'esp': 'und',
+        'est': 'est',
+        'et': 'est',
+        'eu': 'eus',
+        'f': 'fre',
+        'fa': 'per',
+        'ff': 'ful',
+        'fi': 'fin',
+        'fij': 'fij',
+        'filipino': 'fil',
+        'fin': 'fin',
+        'finnish': 'fin',
+        'fle': 'fre',
+        'fo': 'fao',
+        'fon': 'fon',
+        'fr': 'fre',
+        'fra': 'fre',
+        'fre': 'fre',
+        'french': 'fre',
+        'fri': 'fri',
+        'frm': 'frm',
+        'fro': 'fro',
+        'fry': 'fry',
+        'ful': 'ful',
+        'ga': 'gae',
+        'gae': 'gae',
+        'gem': 'gem',
+        'geo': 'geo',
+        'ger': 'ger',
+        'german': 'ger',
+        'gez': 'gez',
+        'gil': 'gil',
+        'gl': 'glg',
+        'gla': 'gla',
+        'gle': 'gle',
+        'glg': 'glg',
+        'gmh': 'gmh',
+        'grc': 'grc',
+        'gre': 'gre',
+        'greek': 'gre',
+        'gsw': 'gsw',
+        'guj': 'guj',
+        'hat': 'hat',
+        'hau': 'hau',
+        'haw': 'haw',
+        'heb': 'heb',
+        'hebrew': 'heb',
+        'her': 'her',
+        'hi': 'hin',
+        'hin': 'hin',
+        'hindi': 'hin',
+        'hmn': 'hmn',
+        'hr': 'hrv',
+        'hrv': 'hrv',
+        'hu': 'hun',
+        'hun': 'hun',
+        'hy': 'hye',
+        'ice': 'ice',
+        'id': 'ind',
+        'iku': 'iku',
+        'in': 'ind',
+        'ind': 'ind',
+        'indonesian': 'ind',
+        'ine': 'ine',
+        'ira': 'ira',
+        'iri': 'iri',
+        'irish': 'iri',
+        'is': 'ice',
+        'it': 'ita',
+        'ita': 'ita',
+        'italian': 'ita',
+        'iw': 'heb',
+        'ja': 'jpn',
+        'jap': 'jpn',
+        'japanese': 'jpn',
+        'jpn': 'jpn',
+        'ka': 'kat',
+        'kab': 'kab',
+        'khi': 'khi',
+        'khm': 'khm',
+        'kin': 'kin',
+        'kk': 'kaz',
+        'km': 'khm',
+        'ko': 'kor',
+        'kon': 'kon',
+        'kor': 'kor',
+        'korean': 'kor',
+        'kur': 'kur',
+        'ky': 'kir',
+        'la': 'lat',
+        'lad': 'lad',
+        'lan': 'und',
+        'lat': 'lat',
+        'latin': 'lat',
+        'lav': 'lav',
+        'lcc': 'und',
+        'lit': 'lit',
+        'lo': 'lao',
+        'lt': 'ltz',
+        'ltz': 'ltz',
+        'lv': 'lav',
+        'mac': 'mac',
+        'mal': 'mal',
+        'mao': 'mao',
+        'map': 'map',
+        'mar': 'mar',
+        'may': 'may',
+        'mfe': 'mfe',
+        'mic': 'mic',
+        'mis': 'mis',
+        'mk': 'mkh',
+        'ml': 'mal',
+        'mla': 'mla',
+        'mlg': 'mlg',
+        'mlt': 'mlt',
+        'mn': 'mon',
+        'moh': 'moh',
+        'mon': 'mon',
+        'mr': 'mar',
+        'ms': 'msa',
+        'mt': 'mlt',
+        'mul': 'mul',
+        'my': 'mya',
+        'myn': 'myn',
+        'nai': 'nai',
+        'nav': 'nav',
+        'nde': 'nde',
+        'ndo': 'ndo',
+        'ne': 'nep',
+        'nep': 'nep',
+        'nic': 'nic',
+        'nl': 'dut',
+        'nor': 'nor',
+        'norwegian': 'nor',
+        'nso': 'sot',
+        'ny': 'nya',
+        'oc': 'oci',
+        'oci': 'oci',
+        'oji': 'oji',
+        'old norse': 'non',
+        'opy': 'und',
+        'ori': 'ori',
+        'ota': 'ota',
+        'paa': 'paa',
+        'pal': 'pal',
+        'pan': 'pan',
+        'per': 'per',
+        'persian': 'per',
+        'farsi': 'per',
+        'pl': 'pol',
+        'pli': 'pli',
+        'pol': 'pol',
+        'polish': 'pol',
+        'por': 'por',
+        'portuguese': 'por',
+        'pra': 'pra',
+        'pro': 'pro',
+        'ps': 'pus',
+        'pt': 'por',
+        'pt-br': 'por',
+        'que': 'que',
+        'ro': 'rum',
+        'roa': 'roa',
+        'roh': 'roh',
+        'romanian': 'rum',
+        'ru': 'rus',
+        'rum': 'rum',
+        'rus': 'rus',
+        'russian': 'rus',
+        'rw': 'kin',
+        'sai': 'sai',
+        'san': 'san',
+        'scc': 'srp',
+        'sco': 'sco',
+        'scottish gaelic': 'gla',
+        'scr': 'scr',
+        'sesotho': 'sot',
+        'sho': 'sna',
+        'shona': 'sna',
+        'si': 'sin',
+        'sl': 'slv',
+        'sla': 'sla',
+        'slo': 'slv',
+        'slovenian': 'slv',
+        'slv': 'slv',
+        'smo': 'smo',
+        'sna': 'sna',
+        'som': 'som',
+        'sot': 'sot',
+        'sotho': 'sot',
+        'spa': 'spa',
+        'spanish': 'spa',
+        'sq': 'alb',
+        'sr': 'srp',
+        'srp': 'srp',
+        'srr': 'srr',
+        'sso': 'sso',
+        'ssw': 'ssw',
+        'st': 'sot',
+        'sux': 'sux',
+        'sv': 'swe',
+        'sw': 'swa',
+        'swa': 'swa',
+        'swahili': 'swa',
+        'swe': 'swe',
+        'swedish': 'swe',
+        'swz': 'ssw',
+        'syc': 'syc',
+        'syr': 'syr',
+        'ta': 'tam',
+        'tag': 'tgl',
+        'tah': 'tah',
+        'tam': 'tam',
+        'tel': 'tel',
+        'tg': 'tgk',
+        'tgl': 'tgl',
+        'th': 'tha',
+        'tha': 'tha',
+        'tib': 'tib',
+        'tl': 'tgl',
+        'tr': 'tur',
+        'tsn': 'tsn',
+        'tso': 'sot',
+        'tsonga': 'tsonga',
+        'tsw': 'tsw',
+        'tswana': 'tsw',
+        'tur': 'tur',
+        'turkish': 'tur',
+        'tut': 'tut',
+        'uk': 'ukr',
+        'ukr': 'ukr',
+        'un': 'und',
+        'und': 'und',
+        'urd': 'urd',
+        'urdu': 'urd',
+        'uz': 'uzb',
+        'uzb': 'uzb',
+        'ven': 'ven',
+        'vi': 'vie',
+        'vie': 'vie',
+        'wel': 'wel',
+        'welsh': 'wel',
+        'wen': 'wen',
+        'wol': 'wol',
+        'xho': 'xho',
+        'xhosa': 'xho',
+        'yid': 'yid',
+        'yor': 'yor',
+        'yu': 'ypk',
+        'zh': 'chi',
+        'zh-cn': 'chi',
+        'zh-tw': 'chi',
+        'zul': 'zul',
+        'zulu': 'zul',
+    }
+    return language_map.get(language.casefold())
+
+
 @public
-def get_language_name(lang_or_key: Thing | str):
+def get_language_name(lang_or_key: "Nothing | str | Thing") -> Nothing | str:
     if isinstance(lang_or_key, str):
         lang = get_language(lang_or_key)
         if not lang:
@@ -758,7 +1150,7 @@ def get_language_name(lang_or_key: Thing | str):
         lang = lang_or_key
 
     user_lang = web.ctx.lang or 'en'
-    return safeget(lambda: lang['name_translated'][user_lang][0]) or lang.name
+    return safeget(lambda: lang['name_translated'][user_lang][0]) or lang.name  # type: ignore[index]
 
 
 @functools.cache
@@ -774,54 +1166,44 @@ def convert_iso_to_marc(iso_639_1: str) -> str | None:
 
 
 @public
-def get_author_config():
-    return _get_author_config()
+def get_identifier_config(identifier: Literal['work', 'edition', 'author']) -> Storage:
+    return _get_identifier_config(identifier)
 
 
 @web.memoize
-def _get_author_config():
-    """Returns the author config.
-
-    The results are cached on the first invocation.
-    Any changes to /config/author page require restarting the app.
-
+def _get_identifier_config(identifier: Literal['work', 'edition', 'author']) -> Storage:
     """
-    thing = web.ctx.site.get('/config/author')
-    if hasattr(thing, "identifiers"):
-        identifiers = [web.storage(t.dict()) for t in thing.identifiers if 'name' in t]
-    else:
-        identifiers = {}
-    return web.storage(identifiers=identifiers)
+    Returns the identifier config.
 
+    The results are cached on the first invocation. Any changes to /config/{identifier} page require restarting the app.
 
-@public
-def get_edition_config():
-    return _get_edition_config()
-
-
-@web.memoize
-def _get_edition_config():
-    """Returns the edition config.
-
-    The results are cached on the first invocation. Any changes to /config/edition page require restarting the app.
-
-    This is is cached because fetching and creating the Thing object was taking about 20ms of time for each book request.
+    This is cached because fetching and creating the Thing object was taking about 20ms of time for each book request.
     """
-    thing = web.ctx.site.get('/config/edition')
-    classifications = [
-        web.storage(t.dict()) for t in thing.classifications if 'name' in t
-    ]
-    identifiers = [web.storage(t.dict()) for t in thing.identifiers if 'name' in t]
-    roles = thing.roles
-    return web.storage(
-        classifications=classifications, identifiers=identifiers, roles=roles
-    )
+    with open(
+        f'openlibrary/plugins/openlibrary/config/{identifier}/identifiers.yml'
+    ) as in_file:
+        id_config = yaml.safe_load(in_file)
+        identifiers = [
+            Storage(id) for id in id_config.get('identifiers', []) if 'name' in id
+        ]
+
+    if identifier == 'edition':
+        thing = web.ctx.site.get('/config/edition')
+        classifications = [
+            Storage(t.dict()) for t in thing.classifications if 'name' in t
+        ]
+        roles = thing.roles
+        return Storage(
+            classifications=classifications, identifiers=identifiers, roles=roles
+        )
+
+    return Storage(identifiers=identifiers)
 
 
 from openlibrary.core.olmarkdown import OLMarkdown
 
 
-def get_markdown(text, safe_mode=False):
+def get_markdown(text: str, safe_mode: bool = False) -> OLMarkdown:
     md = OLMarkdown(source=text, safe_mode=safe_mode)
     view._register_mdx_extensions(md)
     md.postprocessors += view.wiki_processors
@@ -829,6 +1211,8 @@ def get_markdown(text, safe_mode=False):
 
 
 class HTML(str):
+    __slots__ = ()
+
     def __init__(self, html):
         str.__init__(self, web.safeunicode(html))
 
@@ -839,19 +1223,20 @@ class HTML(str):
 _websafe = web.websafe
 
 
-def websafe(text):
+def websafe(text: str) -> str:
     if isinstance(text, HTML):
         return text
-    elif isinstance(text, web.template.TemplateResult):
+    elif isinstance(text, TemplateResult):
         return web.safestr(text)
     else:
         return _websafe(text)
 
 
-from openlibrary.plugins.upstream import adapter
-from openlibrary.utils.olcompress import OLCompressor
-from openlibrary.utils import olmemcache
 import memcache
+
+from openlibrary.plugins.upstream import adapter
+from openlibrary.utils import olmemcache
+from openlibrary.utils.olcompress import OLCompressor
 
 
 class UpstreamMemcacheClient:
@@ -864,13 +1249,13 @@ class UpstreamMemcacheClient:
         compressor = OLCompressor()
         self.compress = compressor.compress
 
-        def decompress(*args, **kw):
+        def decompress(*args, **kw) -> str:
             d = json.loads(compressor.decompress(*args, **kw))
             return json.dumps(adapter.unconvert_dict(d))
 
         self.decompress = decompress
 
-    def get(self, key):
+    def get(self, key: str | None):
         key = adapter.convert_key(key)
         if key is None:
             return None
@@ -927,10 +1312,10 @@ def _get_recent_changes():
     result = result[:50]
 
     def process_thing(thing):
-        t = web.storage()
+        t = Storage()
         for k in ["key", "title", "name", "displayname"]:
             t[k] = thing[k]
-        t['type'] = web.storage(key=thing.type.key)
+        t['type'] = Storage(key=thing.type.key)
         return t
 
     for r in result:
@@ -981,25 +1366,11 @@ _get_recent_changes2 = web.memoize(
 
 
 @public
-def get_random_recent_changes(n):
-    if "recentchanges_v2" in web.ctx.get("features", []):
-        changes = _get_recent_changes2()
-    else:
-        changes = _get_recent_changes()
-
-    _changes = random.sample(changes, n) if len(changes) > n else changes
-    for i, change in enumerate(_changes):
-        _changes[i]['__body__'] = (
-            _changes[i]['__body__'].replace('<script>', '').replace('</script>', '')
-        )
-    return _changes
-
-
 def _get_blog_feeds():
     url = "https://blog.openlibrary.org/feed/"
     try:
         stats.begin("get_blog_feeds", url=url)
-        tree = etree.fromstring(requests.get(url).text)
+        tree = ET.fromstring(requests.get(url).text)
     except Exception:
         # Handle error gracefully.
         logging.getLogger("openlibrary").error(
@@ -1013,9 +1384,11 @@ def _get_blog_feeds():
         pubdate = datetime.datetime.strptime(
             item.find("pubDate").text, '%a, %d %b %Y %H:%M:%S +0000'
         ).isoformat()
-        return dict(
-            title=item.find("title").text, link=item.find("link").text, pubdate=pubdate
-        )
+        return {
+            "title": item.find("title").text,
+            "link": item.find("link").text,
+            "pubdate": pubdate,
+        }
 
     return [parse_item(item) for item in tree.findall(".//item")]
 
@@ -1025,35 +1398,34 @@ _get_blog_feeds = cache.memcache_memoize(
 )
 
 
-def get_donation_include(include):
-    web_input = web.input()
-
-    # The following allows archive.org staff to test banners without
-    # needing to reload openlibrary services:
-    dev_host = web_input.pop("dev_host", "")  # e.g. `www-user`
-    if dev_host and re.match('^[a-zA-Z0-9-.]+$', dev_host):
-        script_src = "https://%s.archive.org/includes/donate.js" % dev_host
-    else:
-        script_src = "/cdn/archive.org/donate.js"
-
-    if 'ymd' in web_input:
-        script_src += '?ymd=' + web_input.ymd
-
-    html = (
-        """
-    <div id="donato"></div>
-    <script src="%s" data-platform="ol"></script>
-    """
-        % script_src
-    )
-    return html
-
-
-# get_donation_include = cache.memcache_memoize(get_donation_include, key_prefix="upstream.get_donation_include", timeout=60)
+@public
+def is_jsdef():
+    return False
 
 
 @public
-def item_image(image_path, default=None):
+def jsdef_get(obj, key, default=None):
+    """
+    foo.get(KEY, default) isn't defined in js, so we can't use that construct
+    in our jsdef methods. This helper function provides a workaround, and works
+    in both environments.
+    """
+    return obj.get(key, default)
+
+
+@public
+def get_ia_host(allow_dev: bool = False) -> str:
+    if allow_dev:
+        web_input = web.input()
+        dev_host = web_input.pop("dev_host", "")  # e.g. `www-user`
+        if dev_host and re.match('^[a-zA-Z0-9-.]+$', dev_host):
+            return dev_host + ".archive.org"
+
+    return "archive.org"
+
+
+@public
+def item_image(image_path: str | None, default: str | None = None) -> str | None:
     if image_path is None:
         return default
     if image_path.startswith('https:'):
@@ -1062,9 +1434,9 @@ def item_image(image_path, default=None):
 
 
 @public
-def get_blog_feeds():
+def get_blog_feeds() -> list[Storage]:
     def process(post):
-        post = web.storage(post)
+        post = Storage(post)
         post.pubdate = parse_datetime(post.pubdate)
         return post
 
@@ -1078,7 +1450,7 @@ class Request:
     fullpath = property(lambda self: web.ctx.fullpath)
 
     @property
-    def canonical_url(self):
+    def canonical_url(self) -> str:
         """Returns the https:// version of the URL.
 
         Used for adding <meta rel="canonical" ..> tag in all web pages.
@@ -1107,7 +1479,7 @@ class Request:
 
 
 @public
-def render_once(key):
+def render_once(key: str) -> bool:
     rendered = web.ctx.setdefault('render_once', {})
     if key in rendered:
         return False
@@ -1158,7 +1530,92 @@ def reformat_html(html_str: str, max_length: int | None = None) -> str:
         return ''.join(content).strip().replace('\n', '<br>')
 
 
-def setup():
+def get_colon_only_loc_pub(pair: str) -> tuple[str, str]:
+    """
+    Get a tuple of a location and publisher name from an Internet Archive
+    publisher string. For use in simple location-publisher pairs with one colon.
+
+    >>> get_colon_only_loc_pub('City : Publisher Name')
+    ('City', 'Publisher Name')
+    """
+    pairs = pair.split(":")
+    if len(pairs) == 2:
+        location = pairs[0].strip(STRIP_CHARS)
+        publisher = pairs[1].strip(STRIP_CHARS)
+
+        return (location, publisher)
+
+    # Fall back to using the entire string as the publisher.
+    return ("", pair.strip(STRIP_CHARS))
+
+
+def get_location_and_publisher(loc_pub: str) -> tuple[list[str], list[str]]:
+    """
+    Parses locations and publisher names out of Internet Archive metadata
+    `publisher` strings. For use when there is no MARC record.
+
+    Returns a tuple of list[location_strings], list[publisher_strings].
+
+    E.g.
+    >>> get_location_and_publisher("[New York] : Random House")
+    (['New York'], ['Random House'])
+    >>> get_location_and_publisher("Londres ; New York ; Paris : Berlitz Publishing")
+    (['Londres', 'New York', 'Paris'], ['Berlitz Publishing'])
+    >>> get_location_and_publisher("Paris : Pearson ; San Jose (Calif.) : Adobe")
+    (['Paris', 'San Jose (Calif.)'], ['Pearson', 'Adobe'])
+    """
+
+    if not loc_pub or not isinstance(loc_pub, str):
+        return ([], [])
+
+    if "Place of publication not identified" in loc_pub:
+        loc_pub = loc_pub.replace("Place of publication not identified", "")
+
+    loc_pub = loc_pub.translate({ord(char): None for char in REPLACE_CHARS})
+
+    # This operates on the notion that anything, even multiple items, to the
+    # left of a colon is a location, and the item immediately to the right of
+    # the colon is a publisher. This can be exploited by using
+    # string.split(";") because everything to the 'left' of a colon is a
+    # location, and whatever is to the right is a publisher.
+    if ":" in loc_pub:
+        locations: list[str] = []
+        publishers: list[str] = []
+        parts = loc_pub.split(";") if ";" in loc_pub else [loc_pub]
+        # Track in indices of values placed into locations or publishers.
+        last_placed_index = 0
+
+        # For each part, look for a semi-colon, then extract everything to
+        # the left as a location, and the item on the right as a publisher.
+        for index, part in enumerate(parts):
+            # This expects one colon per part. Two colons breaks our pattern.
+            # Breaking here gives the chance of extracting a
+            # `location : publisher` from one or more pairs with one semi-colon.
+            if part.count(":") > 1:
+                break
+
+            # Per the pattern, anything "left" of a colon in a part is a place.
+            if ":" in part:
+                location, publisher = get_colon_only_loc_pub(part)
+                publishers.append(publisher)
+                # Every index value between last_placed_index and the current
+                # index is a location.
+                for place in parts[last_placed_index:index]:
+                    locations.append(place.strip(STRIP_CHARS))
+                locations.append(location)  # Preserve location order.
+                last_placed_index = index + 1
+
+        # Clean up and empty list items left over from strip() string replacement.
+        locations = [item for item in locations if item]
+        publishers = [item for item in publishers if item]
+
+        return (locations, publishers)
+
+    # Fall back to making the input a list returning that and an empty location.
+    return ([], [loc_pub.strip(STRIP_CHARS)])
+
+
+def setup() -> None:
     """Do required initialization"""
     # monkey-patch get_markdown to use OL Flavored Markdown
     view.get_markdown = get_markdown
@@ -1176,7 +1633,6 @@ def setup():
             'request': Request(),
             'logger': logging.getLogger("openlibrary.template"),
             'sum': sum,
-            'get_donation_include': get_donation_include,
             'websafe': web.websafe,
         }
     )

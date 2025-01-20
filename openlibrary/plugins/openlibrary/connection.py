@@ -1,17 +1,16 @@
 """Open Library extension to provide a new kind of client connection with caching support.
 """
-from infogami import config
-from infogami.infobase import client, lru
-from infogami.utils import stats
 
-import web
-import json
 import datetime
-
-from openlibrary.core import ia
-
+import json
 import logging
 
+import web
+
+from infogami import config
+from infogami.infobase import client
+from infogami.utils import stats
+from openlibrary.core import ia
 
 logger = logging.getLogger("openlibrary")
 
@@ -502,12 +501,11 @@ class MigrationMiddleware(ConnectionMiddleware):
                 doc['authors'] = [
                     a for a in doc['authors'] if 'author' in a and 'key' in a['author']
                 ]
-        elif type == "/type/edition":
+        elif type == "/type/edition" and 'title_prefix' in doc:
             # get rid of title_prefix.
-            if 'title_prefix' in doc:
-                title = doc['title_prefix'].strip() + ' ' + doc.get('title', '')
-                doc['title'] = title.strip()
-                del doc['title_prefix']
+            title = doc['title_prefix'].strip() + ' ' + doc.get('title', '')
+            doc['title'] = title.strip()
+            del doc['title_prefix']
 
         return doc
 

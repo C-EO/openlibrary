@@ -4,32 +4,43 @@ its experience. This does not include public facing APIs with LTS
 (long term support)
 """
 
-import web
-import re
+import io
 import json
 from collections import defaultdict
-from openlibrary.views.loanstats import get_trending_books
-from infogami import config
-from infogami.utils import delegate
-from infogami.utils.view import render_template  # noqa: F401 used for its side effects
+
+import qrcode
+import web
+
+from infogami import config  # noqa: F401 side effects may be needed
 from infogami.plugins.api.code import jsonapi
-from infogami.utils.view import add_flash_message
+from infogami.utils import delegate
+from infogami.utils.view import (
+    add_flash_message,  # noqa: F401 side effects may be needed
+    render_template,  # noqa: F401 used for its side effects
+)
 from openlibrary import accounts
-from openlibrary.plugins.openlibrary.code import can_write
-from openlibrary.utils.isbn import isbn_10_to_isbn_13, normalize_isbn
-from openlibrary.utils import extract_numeric_id_from_olid
-from openlibrary.plugins.worksearch.subjects import get_subject
-from openlibrary.accounts.model import OpenLibraryAccount
-from openlibrary.core import ia, db, models, lending, helpers as h
+from openlibrary.accounts.model import (
+    OpenLibraryAccount,  # noqa: F401 side effects may be needed
+)
+from openlibrary.core import helpers as h
+from openlibrary.core import lending, models
 from openlibrary.core.bookshelves_events import BookshelvesEvents
-from openlibrary.core.observations import Observations, get_observation_metrics
+from openlibrary.core.follows import PubSub
+from openlibrary.core.helpers import NothingEncoder
 from openlibrary.core.models import Booknotes, Work
-from openlibrary.core.sponsorships import qualifies_for_sponsorship
+from openlibrary.core.observations import Observations, get_observation_metrics
 from openlibrary.core.vendors import (
     create_edition_from_amazon_metadata,
     get_amazon_metadata,
     get_betterworldbooks_metadata,
 )
+from openlibrary.plugins.openlibrary.code import can_write
+from openlibrary.plugins.worksearch.subjects import (
+    get_subject,  # noqa: F401 side effects may be needed
+)
+from openlibrary.utils import extract_numeric_id_from_olid
+from openlibrary.utils.isbn import isbn_10_to_isbn_13, normalize_isbn
+from openlibrary.views.loanstats import get_trending_books
 
 
 class book_availability(delegate.page):
@@ -51,15 +62,10 @@ class book_availability(delegate.page):
         return delegate.RawText(json.dumps(result), content_type="application/json")
 
     def get_book_availability(self, id_type, ids):
-        return (
-            lending.get_availability_of_works(ids)
-            if id_type == "openlibrary_work"
-            else lending.get_availability_of_editions(ids)
-            if id_type == "openlibrary_edition"
-            else lending.get_availability_of_ocaids(ids)
-            if id_type == "identifier"
-            else []
-        )
+        if id_type in ["openlibrary_work", "openlibrary_edition", "identifier"]:
+            return lending.get_availability(id_type, ids)
+        else:
+            return []
 
 
 class trending_books_api(delegate.page):
@@ -173,9 +179,7 @@ class ratings(delegate.page):
         key = (
             i.redir_url
             if i.redir_url
-            else i.edition_id
-            if i.edition_id
-            else ('/works/OL%sW' % work_id)
+            else i.edition_id if i.edition_id else ('/works/OL%sW' % work_id)
         )
         edition_id = (
             int(extract_numeric_id_from_olid(i.edition_id)) if i.edition_id else None
@@ -234,13 +238,13 @@ class booknotes(delegate.page):
         :return: the note
         """
         user = accounts.get_current_user()
+        if not user:
+            raise web.seeother('/account/login?redirect=/works/%s' % work_id)
+
         i = web.input(notes=None, edition_id=None, redir=None)
         edition_id = (
             int(extract_numeric_id_from_olid(i.edition_id)) if i.edition_id else -1
         )
-
-        if not user:
-            raise web.seeother('/account/login?redirect=/works/%s' % work_id)
 
         username = user.key.split('/')[2]
 
@@ -321,7 +325,9 @@ class work_bookshelves(delegate.page):
                 content_type="application/json",
             )
 
-        if (not i.dont_remove) and bookshelf_id == current_status or bookshelf_id == -1:
+        if (
+            (not i.dont_remove) and bookshelf_id == current_status
+        ) or bookshelf_id == -1:
             work_bookshelf = Bookshelves.remove(
                 username=username, work_id=work_id, bookshelf_id=current_status
             )
@@ -361,8 +367,7 @@ class work_editions(delegate.page):
             return delegate.RawText(json.dumps(data), content_type="application/json")
 
     def get_editions_data(self, work, limit, offset):
-        if limit > 1000:
-            limit = 1000
+        limit = min(limit, 1000)
 
         keys = web.ctx.site.things(
             {
@@ -406,8 +411,7 @@ class author_works(delegate.page):
             return delegate.RawText(json.dumps(data), content_type="application/json")
 
     def get_works_data(self, author, limit, offset):
-        if limit > 1000:
-            limit = 1000
+        limit = min(limit, 1000)
 
         keys = web.ctx.site.things(
             {
@@ -434,24 +438,6 @@ class author_works(delegate.page):
         return {"links": links, "size": size, "entries": works}
 
 
-class sponsorship_eligibility_check(delegate.page):
-    path = r'/sponsorship/eligibility/(.*)'
-
-    @jsonapi
-    def GET(self, _id):
-        i = web.input(patron=None, scan_only=False)
-        edition = (
-            web.ctx.site.get('/books/%s' % _id)
-            if re.match(r'OL[0-9]+M', _id)
-            else models.Edition.from_isbn(_id)
-        )
-        if not edition:
-            return json.dumps({"status": "error", "reason": "Invalid ISBN 13"})
-        return json.dumps(
-            qualifies_for_sponsorship(edition, scan_only=i.scan_only, patron=i.patron)
-        )
-
-
 class price_api(delegate.page):
     path = r'/prices'
 
@@ -465,9 +451,11 @@ class price_api(delegate.page):
 
         metadata = {
             'amazon': get_amazon_metadata(id_, id_type=id_type[:4]) or {},
-            'betterworldbooks': get_betterworldbooks_metadata(id_)
-            if id_type.startswith('isbn_')
-            else {},
+            'betterworldbooks': (
+                get_betterworldbooks_metadata(id_)
+                if id_type.startswith('isbn_')
+                else {}
+            ),
         }
         # if user supplied isbn_{n} fails for amazon, we may want to check the alternate isbn
 
@@ -475,8 +463,8 @@ class price_api(delegate.page):
         if id_type == 'isbn_10' and metadata['betterworldbooks'].get('price') is None:
             isbn_13 = isbn_10_to_isbn_13(id_)
             metadata['betterworldbooks'] = (
-                isbn_13 and get_betterworldbooks_metadata(isbn_13) or {}
-            )
+                isbn_13 and get_betterworldbooks_metadata(isbn_13)
+            ) or {}
 
         # fetch book by isbn if it exists
         # TODO: perform existing OL lookup by ASIN if supplied, if possible
@@ -498,10 +486,38 @@ class price_api(delegate.page):
             ed = web.ctx.site.get(book_key)
             if ed:
                 metadata['key'] = ed.key
-                if getattr(ed, 'ocaid'):
+                if getattr(ed, 'ocaid'):  # noqa: B009
                     metadata['ocaid'] = ed.ocaid
 
         return json.dumps(metadata)
+
+
+class patrons_follows_json(delegate.page):
+    path = r"(/people/[^/]+)/follows"
+    encoding = "json"
+
+    def GET(self, key):
+        i = web.input(publisher='', redir_url='', state='')
+        user = accounts.get_current_user()
+        if not user or user.key != key:
+            raise web.seeother(f'/account/login?redir_url={i.redir_url}')
+
+        username = user.key.split('/')[2]
+        return delegate.RawText(
+            json.dumps(PubSub.get_subscriptions(username), cls=NothingEncoder),
+            content_type="application/json",
+        )
+
+    def POST(self, key):
+        i = web.input(publisher='', redir_url='', state='')
+        user = accounts.get_current_user()
+        if not user or user.key != key:
+            raise web.seeother(f'/account/login?redir_url={i.redir_url}')
+
+        username = user.key.split('/')[2]
+        action = PubSub.subscribe if i.state == '0' else PubSub.unsubscribe
+        action(username, i.publisher)
+        raise web.seeother(i.redir_url)
 
 
 class patrons_observations(delegate.page):
@@ -591,21 +607,38 @@ class work_delete(delegate.page):
     path = r"/works/(OL\d+W)/[^/]+/delete"
 
     def get_editions_of_work(self, work: Work) -> list[dict]:
+        i = web.input(bulk=False)
         limit = 1_000  # This is the max limit of the things function
-        keys: list = web.ctx.site.things(
-            {"type": "/type/edition", "works": work.key, "limit": limit}
-        )
-        if len(keys) == limit:
-            raise web.HTTPError(
-                '400 Bad Request',
-                data=json.dumps(
-                    {
-                        'error': f'API can only delete {limit} editions per work',
-                    }
-                ),
-                headers={"Content-Type": "application/json"},
+        all_keys: list = []
+        offset = 0
+
+        while True:
+            keys: list = web.ctx.site.things(
+                {
+                    "type": "/type/edition",
+                    "works": work.key,
+                    "limit": limit,
+                    "offset": offset,
+                }
             )
-        return web.ctx.site.get_many(keys, raw=True)
+            all_keys.extend(keys)
+            if len(keys) == limit:
+                if not i.bulk:
+                    raise web.HTTPError(
+                        '400 Bad Request',
+                        data=json.dumps(
+                            {
+                                'error': f'API can only delete {limit} editions per work.',
+                            }
+                        ),
+                        headers={"Content-Type": "application/json"},
+                    )
+                else:
+                    offset += limit
+            else:
+                break
+
+        return web.ctx.site.get_many(all_keys, raw=True)
 
     def POST(self, work_id: str):
         if not can_write():
@@ -634,3 +667,40 @@ class work_delete(delegate.page):
             ),
             content_type="application/json",
         )
+
+
+class hide_banner(delegate.page):
+    path = '/hide_banner'
+
+    def POST(self):
+        user = accounts.get_current_user()
+        data = json.loads(web.data())
+
+        # Set truthy cookie that expires in 30 days:
+        DAY_SECONDS = 60 * 60 * 24
+        cookie_duration_days = int(data.get('cookie-duration-days', 30))
+
+        if user and data['cookie-name'].startswith('yrg'):
+            user.save_preferences({'yrg_banner_pref': data['cookie-name']})
+
+        web.setcookie(
+            data['cookie-name'], '1', expires=(cookie_duration_days * DAY_SECONDS)
+        )
+
+        return delegate.RawText(
+            json.dumps({'success': 'Preference saved'}), content_type="application/json"
+        )
+
+
+class create_qrcode(delegate.page):
+    path = '/qrcode'
+
+    def GET(self):
+        i = web.input(path='/')
+        page_path = i.path
+        qr_url = f'{web.ctx.home}{page_path}'
+        img = qrcode.make(qr_url)
+        with io.BytesIO() as buf:
+            img.save(buf, format='PNG')
+            web.header("Content-Type", "image/png")
+            return delegate.RawText(buf.getvalue())

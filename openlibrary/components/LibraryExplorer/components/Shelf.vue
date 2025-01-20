@@ -88,12 +88,12 @@
 </template>
 
 <script>
-import OLCarousel from './OLCarousel';
-import ClassSlider from './ClassSlider';
-import ShelfLabel from './ShelfLabel';
-import BookCover3D from './BookCover3D';
-import FlatBookCover from './FlatBookCover';
-import ShelfIndex from './ShelfIndex';
+import OLCarousel from './OLCarousel.vue';
+import ClassSlider from './ClassSlider.vue';
+import ShelfLabel from './ShelfLabel.vue';
+import BookCover3D from './BookCover3D.vue';
+import FlatBookCover from './FlatBookCover.vue';
+import ShelfIndex from './ShelfIndex.vue';
 import ExpandIcon from './icons/ExpandIcon.vue';
 import IndexIcon from './icons/IndexIcon.vue';
 import maxBy from 'lodash/maxBy';
@@ -124,7 +124,7 @@ class FetchCoordinator {
     }
 
     enqueue(fetchRequest) {
-        // console.log(`Enqueing request #${this.requestedFetches.length + 1}: ${fetchRequest.name}`);
+        // console.log(`Enqueuing request #${this.requestedFetches.length + 1}: ${fetchRequest.name}`);
         this.requestedFetches.push(fetchRequest);
         this.activate();
     }
@@ -220,5 +220,13 @@ export default {
   border-radius: 0;
   background: black;
   color: white;
+}
+
+button {
+  border: 0;
+  background: 0;
+  padding: 6px 8px;
+  font: inherit;
+  color: inherit;
 }
 </style>

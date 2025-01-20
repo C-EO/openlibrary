@@ -3,10 +3,10 @@
 import datetime
 import json
 import logging
+import os
 import sys
 import time
 
-import _init_path  # noqa: F401  Imported for its side effect of setting PYTHONPATH
 import web
 
 from openlibrary.api import OLError, OpenLibrary
@@ -19,8 +19,12 @@ logger = logging.getLogger("openlibrary.importer")
 
 @web.memoize
 def get_ol(servername=None):
-    ol = OpenLibrary(base_url=servername)
-    ol.autologin()
+    if os.getenv('LOCAL_DEV'):
+        ol = OpenLibrary(base_url="http://localhost:8080")
+        ol.login("admin", "admin123")
+    else:
+        ol = OpenLibrary(base_url=servername)
+        ol.autologin()
     return ol
 
 
@@ -83,7 +87,7 @@ def import_ocaids(*ocaids, **kwargs):
                 --config /olsystem/etc/openlibrary.yml \
                 import-all
     """
-    servername = kwargs.get('servername', None)
+    servername = kwargs.get('servername')
     require_marc = not kwargs.get('no_marc', False)
 
     date = datetime.date.today()
@@ -117,14 +121,14 @@ def add_new_scans(args):
         # yesterday
         date = datetime.date.today() - datetime.timedelta(days=1)
 
-    items = get_candidate_ocaids(since_date=date)
+    items = list(get_candidate_ocaids(date))
     batch_name = f"new-scans-{date.year:04}{date.month:02}"
     batch = Batch.find(batch_name) or Batch.new(batch_name)
     batch.add_items(items)
 
 
 def import_batch(args, **kwargs):
-    servername = kwargs.get('servername', None)
+    servername = kwargs.get('servername')
     require_marc = not kwargs.get('no_marc', False)
     batch_name = args[0]
     batch = Batch.find(batch_name)
@@ -137,7 +141,7 @@ def import_batch(args, **kwargs):
 
 
 def import_item(args, **kwargs):
-    servername = kwargs.get('servername', None)
+    servername = kwargs.get('servername')
     require_marc = not kwargs.get('no_marc', False)
     ia_id = args[0]
     if item := ImportItem.find_by_identifier(ia_id):
@@ -149,11 +153,11 @@ def import_item(args, **kwargs):
 def import_all(args, **kwargs):
     import multiprocessing
 
-    servername = kwargs.get('servername', None)
+    servername = kwargs.get('servername')
     require_marc = not kwargs.get('no_marc', False)
 
     # Use multiprocessing to call do_import on each item
-    with multiprocessing.Pool(processes=10) as pool:
+    with multiprocessing.Pool(processes=8) as pool:
         while True:
             logger.info("find_pending START")
             items = ImportItem.find_pending()
@@ -162,30 +166,13 @@ def import_all(args, **kwargs):
             if not items:
                 logger.info("No pending items found. sleeping for a minute.")
                 time.sleep(60)
+                continue
 
             logger.info("starmap START")
             pool.starmap(
                 do_import, ((item, servername, require_marc) for item in items)
             )
             logger.info("starmap END")
-
-
-def retroactive_import(start=None, stop=None, servername=None):
-    """Retroactively searches and imports all previously missed books
-    (through all time) in the Archive.org database which were
-    created after scribe3 was released (when we switched repub states
-    from 4 to [19, 20, 22]).
-    """
-    scribe3_repub_states = [19, 20, 22]
-    items = get_candidate_ocaids(
-        scanned_within_days=None, repub_states=scribe3_repub_states
-    )[start:stop]
-    date = datetime.date.today()
-    batch_name = f"new-scans-{date.year:04}{date.month:02}"
-    batch = Batch.find(batch_name) or Batch.new(batch_name)
-    batch.add_items(items)
-    for item in batch.get_items():
-        do_import(item, servername=servername)
 
 
 def main():
@@ -221,13 +208,6 @@ def main():
         else:
             args.append(i)
 
-    if cmd == "import-retro":
-        start, stop = (
-            (int(a) for a in args) if (args and len(args) == 2) else (None, None)
-        )
-        return retroactive_import(
-            start=start, stop=stop, servername=flags['servername']
-        )
     if cmd == "import-ocaids":
         return import_ocaids(*args, **flags)
     if cmd == "add-items":

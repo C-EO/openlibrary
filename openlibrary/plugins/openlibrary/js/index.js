@@ -1,64 +1,23 @@
 import 'jquery';
-import 'jquery-validation';
-import 'jquery-ui/ui/widgets/dialog';
-import 'jquery-ui/ui/widgets/autocomplete';
-// For dialog boxes (e.g. add to list)
-import 'jquery-colorbox';
-// jquery.form#2.36 not on npm, no longer getting worked on
-import '../../../../vendor/js/jquery-form/jquery.form.js';
-import autocompleteInit from './autocomplete';
-// Used only by the openlibrary/templates/books/edit/addfield.html template
-import addNewFieldInit from './add_new_field';
-import automaticInit from './automatic';
-import bookReaderInit from './bookreader_direct';
-import { ungettext, ugettext,  sprintf } from './i18n';
-import jQueryRepeat from './jquery.repeat';
-import { enumerate, htmlquote, websafe, foreach, join, len, range } from './jsdef';
+import { exposeGlobally } from './jsdef';
 import initAnalytics from './ol.analytics';
 import init from './ol.js';
-import * as Browser from './Browser';
-import { commify } from './python';
-import { Subject, urlencode, slice } from './subjects';
-import Template from './template.js';
-// Add $.fn.focusNextInputField
-import { closePopup, truncate, cond } from './utils';
-import initValidate from './validate';
+import initServiceWorker from './service-worker-init.js'
 import '../../../../static/css/js-all.less';
 // polyfill Promise support for IE11
 import Promise from 'promise-polyfill';
-import { confirmDialog, initDialogs } from './dialog';
 
 // Eventually we will export all these to a single global ol, but in the mean time
 // we add them to the window object for backwards compatibility.
-// closePopup used in openlibrary/templates/covers/saved.html
-window.closePopup = closePopup;
-window.commify = commify;
-window.cond = cond;
-window.enumerate = enumerate;
-window.foreach = foreach;
-window.htmlquote = htmlquote;
-window.len = len;
-window.range = range;
-window.slice = slice;
-window.sprintf = sprintf;
-window.truncate = truncate;
-window.urlencode = urlencode;
-window.websafe = websafe;
-window._ = ugettext;
-window.ungettext = ungettext;
-window.uggettext = ugettext;
-
-window.Browser = Browser;
-window.Subject = Subject;
-window.Template = Template;
-
-// Extend existing prototypes
-String.prototype.join = join;
+exposeGlobally();
 
 window.jQuery = jQuery;
 window.$ = jQuery;
 
 window.Promise = Promise;
+
+// Init the service worker first since it does caching
+initServiceWorker();
 
 // This to the best of our knowledge needs to be run synchronously,
 // because it sends the initial pageview to analytics.
@@ -91,55 +50,60 @@ jQuery(function () {
         };
     }
 
-    const $markdownTextAreas = $('textarea.markdown');
-    // Live NodeList is cast to static array to avoid infinite loops
-    const $carouselElements = $('.carousel--progressively-enhanced');
-    const $tabs = $('#tabsAddbook,#tabsAddauthor,.tabs:not(.ui-tabs)');
-
-    initDialogs();
-    // expose ol_confirm_dialog method
-    $.fn.ol_confirm_dialog = confirmDialog;
-
+    const $tabs = $('.ol-tabs');
     if ($tabs.length) {
         import(/* webpackChunkName: "tabs" */ './tabs')
             .then((module) => module.initTabs($tabs));
     }
 
-    initValidate($);
-    autocompleteInit($);
-    addNewFieldInit($);
-    automaticInit($);
+    const $autocomplete = $('.multi-input-autocomplete');
+    if ($autocomplete.length) {
+        import(/* webpackChunkName: "autocomplete" */ './autocomplete')
+            .then((module) => module.init($));
+    }
+
+    // hide all images in .no-img
+    $('.no-img img').hide();
+
+    // disable save button after click
+    $('button[name=\'_save\']').on('submit', function() {
+        $(this).attr('disabled', true);
+    });
+
     // wmd editor
+    const $markdownTextAreas = $('textarea.markdown');
     if ($markdownTextAreas.length) {
         import(/* webpackChunkName: "markdown-editor" */ './markdown-editor')
             .then((module) => module.initMarkdownEditor($markdownTextAreas));
     }
-    bookReaderInit($);
-    jQueryRepeat($);
+
     init($);
+
     // conditionally load functionality based on what's in the page
     if (document.getElementsByClassName('editions-table--progressively-enhanced').length) {
         import(/* webpackChunkName: "editions-table" */ './editions-table')
             .then(module => module.initEditionsTable());
     }
 
-    const edition = document.getElementById('tabsAddbook');
+    const edition = document.getElementById('addWork');
     const autocompleteAuthor = document.querySelector('.multi-input-autocomplete--author');
-    const addRowButton = document.getElementById('add_row_button');
-    const roles = document.querySelector('#roles');
-    const identifiers = document.querySelector('#identifiers');
-    const classifications = document.querySelector('#classifications');
     const autocompleteLanguage = document.querySelector('.multi-input-autocomplete--language');
     const autocompleteWorks = document.querySelector('.multi-input-autocomplete--works');
+    const autocompleteSeeds = document.querySelector('.multi-input-autocomplete--seeds');
     const autocompleteSubjects = document.querySelector('.csv-autocomplete--subjects');
+    const addRowButton = document.getElementById('add_row_button');
+    const roles = document.querySelector('#roles');
+    const classifications = document.querySelector('#classifications');
     const excerpts = document.getElementById('excerpts');
     const links = document.getElementById('links');
 
     // conditionally load for user edit page
     if (
         edition ||
-        autocompleteAuthor || addRowButton || roles || identifiers || classifications ||
-        autocompleteLanguage || autocompleteWorks || excerpts || links
+        autocompleteAuthor || autocompleteLanguage || autocompleteWorks ||
+        autocompleteSeeds || autocompleteSubjects ||
+        addRowButton || roles || classifications ||
+        excerpts || links
     ) {
         import(/* webpackChunkName: "user-website" */ './edit')
             .then(module => {
@@ -161,9 +125,6 @@ jQuery(function () {
                 if (roles) {
                     module.initRoleValidation();
                 }
-                if (identifiers) {
-                    module.initIdentifierValidation();
-                }
                 if (classifications) {
                     module.initClassificationValidation();
                 }
@@ -175,6 +136,9 @@ jQuery(function () {
                 }
                 if (autocompleteSubjects) {
                     module.initSubjectsAutocomplete();
+                }
+                if (autocompleteSeeds) {
+                    module.initSeedsMultiInputAutocomplete();
                 }
             });
     }
@@ -194,19 +158,33 @@ jQuery(function () {
             });
     }
 
-    // conditionally load real time signup functionality based on class in the page
-    if (document.getElementsByClassName('olform create validate').length) {
-        import(/* webpackChunkName: "realtime-account-validation" */'./realtime_account_validation.js')
-            .then(module => module.initRealTimeValidation());
+    // conditionally load for type changing input
+    const typeChanger = document.getElementById('type.key')
+    if (typeChanger) {
+        import(/* webpackChunkName: "type-changer" */ './type_changer.js')
+            .then(module => module.initTypeChanger(typeChanger));
     }
-    // conditionally load readmore button based on class in the page
-    const readMoreButtons = document.getElementsByClassName('read-more-button');
+
+    // conditionally load validation and submission js for registration form
+    if (document.querySelector('form[name=signup]')) {
+        import(/* webpackChunkName: "signup" */'./signup.js')
+            .then(module => module.initSignupForm());
+    }
+
+    // conditionally load submission js for login form
+    if (document.querySelector('form[name=login]')) {
+        import(/* webpackChunkName: "signup" */'./signup.js')
+            .then(module => module.initLoginForm());
+    }
+
+    // conditionally load clamping components
+    const readMoreComponents = document.getElementsByClassName('read-more');
     const clampers = document.querySelectorAll('.clamp');
-    if (readMoreButtons.length || clampers.length) {
+    if (readMoreComponents.length || clampers.length) {
         import(/* webpackChunkName: "readmore" */ './readmore.js')
             .then(module => {
-                if (readMoreButtons.length) {
-                    module.initReadMoreButton();
+                if (readMoreComponents.length) {
+                    module.ReadMoreComponent.init();
                 }
                 if (clampers.length) {
                     module.initClampers(clampers);
@@ -223,10 +201,17 @@ jQuery(function () {
         import(/* webpackChunkName: "carousels-partials" */'./carousels_partials.js')
             .then(module => module.initCarouselsPartials());
     }
+    // conditionally load list seed item deletion dialog functionality based on id on lists pages
+    if (document.getElementById('listResults')) {
+        import(/* webpackChunkName: "ListViewBody" */'./lists/ListViewBody.js');
+    }
+
     // Enable any carousels in the page
+    const $carouselElements = $('.carousel--progressively-enhanced');
     if ($carouselElements.length) {
-        import(/* webpackChunkName: "carousel" */ './carousel')
-            .then((module) => { module.init($carouselElements);
+        import(/* webpackChunkName: "carousel" */ './carousel/Carousel.js')
+            .then((module) => {
+                $carouselElements.each((_i, el) => new module.Carousel($(el)).init());
                 $('.slick-slide').each(function () {
                     if ($(this).attr('aria-describedby') !== undefined) {
                         $(this).attr('id',$(this).attr('aria-describedby'));
@@ -239,15 +224,11 @@ jQuery(function () {
             .then((module) => module.init());
     }
 
-    if (window.READINGLOG_STATS_CONFIG) {
+    const readingLogCharts = document.querySelector('.readinglog-charts')
+    if (readingLogCharts) {
+        const readingLogConfig = JSON.parse(readingLogCharts.dataset.config)
         import(/* webpackChunkName: "readinglog-stats" */ './readinglog_stats')
-            .then(module => module.init(window.READINGLOG_STATS_CONFIG));
-    }
-
-    const pageEl = $('#page-barcodescanner');
-    if (pageEl.length) {
-        import(/* webpackChunkName: "page-barcodescanner" */ './page-barcodescanner')
-            .then((module) => module.init());
+            .then(module => module.init(readingLogConfig));
     }
 
     if (document.getElementsByClassName('toast').length) {
@@ -256,6 +237,11 @@ jQuery(function () {
                 Array.from(document.getElementsByClassName('toast'))
                     .forEach(el => new module.Toast($(el)));
             });
+    }
+
+    if ($('.lazy-thing-preview').length) {
+        import(/* webpackChunkName: "lazy-thing-preview" */ './lazy-thing-preview')
+            .then((module) => new module.LazyThingPreview().init());
     }
 
     const $observationModalLinks = $('.observations-modal-link');
@@ -333,9 +319,10 @@ jQuery(function () {
             .then((module) => module.initOfflineBanner());
     }
 
-    if (document.getElementById('searchFacets')) {
+    const searchFacets = document.getElementById('searchFacets')
+    if (searchFacets) {
         import(/* webpackChunkName: "search" */ './search')
-            .then((module) => module.initSearchFacets());
+            .then((module) => module.initSearchFacets(searchFacets));
     }
 
     // Conditionally load Integrated Librarian Environment
@@ -354,35 +341,40 @@ jQuery(function () {
         $('#cboxSlideshow').attr({'aria-label': 'Slideshow button', 'aria-hidden': 'true'});
     }
 
-    // "Want to Read" buttons:
-    const droppers = document.getElementsByClassName('widget-add');
-
-    // Async lists components:
-    const wtrLoadingIndicator = document.querySelector('.list-loading-indicator')
-    const overviewLoadingIndicator = document.querySelector('.list-overview-loading-indicator')
-
-    if (droppers.length || wtrLoadingIndicator || overviewLoadingIndicator) {
-        import(/* webpackChunkName: "lists" */ './lists')
+    const droppers = document.querySelectorAll('.dropper')
+    const genericDroppers = document.querySelectorAll('.generic-dropper-wrapper')
+    if (droppers.length || genericDroppers.length) {
+        import(/* webpackChunkName: "droppers" */ './dropper')
             .then((module) => {
-                if (droppers.length) {
-                    module.initDroppers(droppers);
-                    // Removable list items:
-                    // TODO: Is this the correct place to initalize these?
-                    const actionableListItems = document.querySelectorAll('.actionable-item')
-                    module.registerListItems(actionableListItems);
-                }
-                if (wtrLoadingIndicator || overviewLoadingIndicator) {
-                    module.initListLoading(wtrLoadingIndicator, overviewLoadingIndicator)
-                }
-            }
-            );
+                module.initDroppers(droppers)
+                module.initGenericDroppers(genericDroppers)
+            })
     }
 
-    const nativeDialogs = document.querySelectorAll('.native-dialog')
+    // My Books Droppers:
+    const myBooksDroppers = document.querySelectorAll('.my-books-dropper')
+    if (myBooksDroppers.length) {
+        const actionableListShowcases = document.querySelectorAll('.actionable-item')
+
+        import(/* webpackChunkName: "my-books" */ './my-books')
+            .then((module) => {
+                module.initMyBooksAffordances(myBooksDroppers, actionableListShowcases)
+            })
+    }
+
+    // TODO: Make these selectors a consistent interface
+    const $dialogs = $('.dialog--open,.dialog--close,#noMaster,#confirmMerge,#leave-waitinglist-dialog,.cta-btn--preview');
+    if ($dialogs.length) {
+        import(/* webpackChunkName: "dialog" */ './dialog')
+            .then(module => module.initDialogs())
+    }
+
+    const nativeDialogs = document.querySelectorAll('.native-dialog');
     if (nativeDialogs.length) {
-        import(/* webpackChunkName: "dialog" */ './native-dialog')
+        import(/* webpackChunkName: "native-dialog" */ './native-dialog')
             .then(module => module.initDialogs(nativeDialogs))
     }
+
     const setGoalLinks = document.querySelectorAll('.set-reading-goal-link')
     const goalEditLinks = document.querySelectorAll('.edit-reading-goal-link')
     const goalSubmitButtons = document.querySelectorAll('.reading-goal-submit-button')
@@ -427,6 +419,18 @@ jQuery(function () {
         $('details[open]').not(this).removeAttr('open');
     });
 
+    $('.header-dropdown').on('keydown', function (event) {
+        if (event.key === 'Escape') {
+            $('.header-dropdown > details[open]').removeAttr('open');
+        }
+    });
+
+    $('.dropdown-menu').each(function() {
+        $(this).find('a').last().on('focusout', function() {
+            $('.header-dropdown > details[open]').removeAttr('open');
+        });
+    });
+
     // Open one dropdown at a time.
     $(document).on('click', function (event) {
         const $openMenus = $('.header-dropdown details[open]').parents('.header-dropdown');
@@ -439,45 +443,46 @@ jQuery(function () {
     // Prevent default star rating behavior:
     const ratingForms = document.querySelectorAll('.star-rating-form')
     if (ratingForms.length) {
-        import(/* webpackChunkName: "star-ratings" */'./handlers')
+        import(/* webpackChunkName: "star-ratings" */'./star-ratings')
             .then((module) => module.initRatingHandlers(ratingForms));
     }
 
-    const navbar = document.querySelector('.work-menu');
-    if (navbar) {
-        const compactTitle = document.querySelector('.compact-title')
-        // Add position-aware navbar JS:
+    // Book page navbar initialization:
+    const navbarWrappers = document.querySelectorAll('.nav-bar-wrapper')
+    if (navbarWrappers.length) {
+        // Add JS for book page navbar:
         import(/* webpackChunkName: "nav-bar" */ './edition-nav-bar')
-            .then((module) => module.initNavbar(navbar));
-        // Add sticky title component animations:
+            .then((module) => {
+                module.initNavbars(navbarWrappers)
+            });
+        // Add sticky title component animations to desktop views:
         import(/* webpackChunkName: "compact-title" */ './compact-title')
-            .then((module) => module.initCompactTitle(navbar, compactTitle))
+            .then((module) => {
+                const compactTitle = document.querySelector('.compact-title')
+                const desktopNavbar = [...navbarWrappers].find(elem => elem.classList.contains('desktop-only'))
+                module.initCompactTitle(desktopNavbar, compactTitle)
+            })
     }
 
     // Add functionality for librarian merge request table:
-    const mergeRequestCloseLinks = document.querySelectorAll('.mr-close-link')
-    const mergeRequestResolveLinks = document.querySelectorAll('.mr-resolve-link')
-    const mergeRequestCommentButtons = document.querySelectorAll('.mr-comment-btn')
-    const showCommentsLinks = document.querySelectorAll('.comment-expand')
-    const unassignElements = document.querySelectorAll('.mr-unassign')
+    const librarianQueue = document.querySelector('.librarian-queue-wrapper')
 
-    if (mergeRequestCloseLinks.length || mergeRequestCommentButtons.length || showCommentsLinks.length || mergeRequestResolveLinks.length || unassignElements.length) {
+    if (librarianQueue) {
         import(/* webpackChunkName: "merge-request-table" */'./merge-request-table')
             .then(module => {
-                if (mergeRequestCloseLinks.length) {
-                    module.initCloseLinks(mergeRequestCloseLinks)
+                if (librarianQueue) {
+                    module.initLibrarianQueue(librarianQueue)
                 }
-                if (mergeRequestCommentButtons.length) {
-                    module.initCommenting(mergeRequestCommentButtons)
-                }
-                if (showCommentsLinks.length) {
-                    module.initShowAllCommentsLinks(showCommentsLinks)
-                }
-                if (mergeRequestResolveLinks.length) {
-                    module.initRequestClaiming(mergeRequestResolveLinks)
-                }
-                if (unassignElements.length) {
-                    module.initUnassignment(unassignElements)
+            })
+    }
+
+    // Add functionality to the team page for filtering members:
+    const teamCards = document.querySelector('.teamCards_container')
+    if (teamCards) {
+        import('./team')
+            .then(module => {
+                if (teamCards) {
+                    module.initTeamFilter();
                 }
             })
     }
@@ -487,5 +492,65 @@ jQuery(function () {
     if (addProviderRowLink) {
         import(/* webpackChunkName "add-provider-link" */ './add_provider')
             .then(module => module.initAddProviderRowLink(addProviderRowLink))
+    }
+
+
+    // Allow banner announcements to be dismissed by logged-in users:
+    const banners = document.querySelectorAll('.page-banner--dismissable')
+    if (banners.length) {
+        import(/* webpackChunkName: "dismissible-banner" */ './banner')
+            .then(module => module.initDismissibleBanners(banners))
+    }
+
+    const returnForms = document.querySelectorAll('.return-form')
+    if (returnForms.length) {
+        import(/* webpackChunkName: "return-form" */ './return-form')
+            .then(module => module.initReturnForms(returnForms))
+    }
+
+    const crumbs = document.querySelectorAll('.crumb select');
+    if (crumbs.length) {
+        import(/* webpackChunkName: "breadcrumb-select" */ './breadcrumb_select')
+            .then(module => module.initBreadcrumbSelect(crumbs));
+    }
+
+    const leaveWaitlistLinks = document.querySelectorAll('a.leave');
+    if (leaveWaitlistLinks.length && document.getElementById('leave-waitinglist-dialog')) {
+        import(/* webpackChunkName: "waitlist" */ './waitlist')
+            .then(module => module.initLeaveWaitlist(leaveWaitlistLinks));
+    }
+
+    const thirdPartyLoginsIframe = document.getElementById('ia-third-party-logins');
+    if (thirdPartyLoginsIframe) {
+        import(/* webpackChunkName: "ia_thirdparty_logins" */ './ia_thirdparty_logins')
+            .then((module) => module.initMessageEventListener(thirdPartyLoginsIframe));
+    }
+
+    // Password visibility toggle:
+    const passwordVisibilityToggle = document.querySelector('.password-visibility-toggle')
+    if (passwordVisibilityToggle) {
+        import(/* webpackChunkName: "password-visibility-toggle" */ './password-toggle')
+            .then(module => module.initPasswordToggling(passwordVisibilityToggle))
+    }
+
+    // Affiliate links:
+    const affiliateLinksSection = document.querySelectorAll('.affiliate-links-section')
+    if (affiliateLinksSection.length) {
+        import(/* webpackChunkName: "affiliate-links" */ './affiliate-links')
+            .then(module => module.initAffiliateLinks(affiliateLinksSection))
+    }
+
+    // Fulltext search box:
+    const  fulltextSearchSuggestion = document.querySelector('#fulltext-search-suggestion')
+    if (fulltextSearchSuggestion) {
+        import(/* webpackChunkName: "fulltext-search-suggestion" */ './fulltext-search-suggestion')
+            .then(module => module.initFulltextSearchSuggestion(fulltextSearchSuggestion))
+    }
+
+    // Go back redirect:
+    const backLinks = document.querySelectorAll('.go-back-link')
+    if (backLinks.length) {
+        import (/* webpackChunkName: "go-back-links" */ './go-back-links')
+            .then(module => module.initGoBackLinks(backLinks))
     }
 });

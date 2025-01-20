@@ -1,12 +1,12 @@
 """Infobase hook for openlibrary.
 
-    * Log all modified book pages as required for the search engine.
+* Log all modified book pages as required for the search engine.
 """
+
+import datetime
 
 from infogami.infobase import config
 from infogami.infobase.logger import Logger
-
-import datetime
 
 root = getattr(config, 'booklogroot', 'booklog')
 

@@ -1,6 +1,7 @@
+import web
+
 from infogami import config
 from infogami.utils.view import render_template
-import web
 
 
 def sendmail_with_template(template, to, cc=None, frm=None, **kwargs):
@@ -13,18 +14,10 @@ def _sendmail(to, msg, cc=None, frm=None):
     frm = frm or config.from_address
     if config.get('dummy_sendmail'):
         message = (
-            ''
-            + 'To: '
-            + to
-            + '\n'
-            + 'From:'
-            + config.from_address
-            + '\n'
-            + 'Subject:'
-            + msg.subject
-            + '\n'
-            + '\n'
-            + web.safestr(msg)
+            f'To: {to}\n'
+            f'From:{config.from_address}\n'
+            f'Subject:{msg.subject}\n'
+            f'\n{web.safestr(msg)}'
         )
 
         print("sending email", message, file=web.debug)

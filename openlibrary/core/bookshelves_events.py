@@ -1,5 +1,6 @@
 from datetime import datetime
 from enum import IntEnum
+
 from . import db
 
 
@@ -140,7 +141,7 @@ class BookshelvesEvents(db.CommonExtras):
                 cls.TABLENAME,
                 where='id=$id',
                 vars={'id': pid},
-                updated=datetime.utcnow(),
+                updated=datetime.now(),
                 **updates,
             )
         return 0
@@ -151,7 +152,7 @@ class BookshelvesEvents(db.CommonExtras):
 
         where_clause = 'id=$id'
         where_vars = {'id': pid}
-        update_time = datetime.utcnow()
+        update_time = datetime.now()
 
         return oldb.update(
             cls.TABLENAME,
@@ -166,7 +167,7 @@ class BookshelvesEvents(db.CommonExtras):
 
         where_clause = 'id=$id'
         where_vars = {'id': pid}
-        update_time = datetime.utcnow()
+        update_time = datetime.now()
 
         return oldb.update(
             cls.TABLENAME,

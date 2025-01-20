@@ -1,12 +1,14 @@
 """
 Filters used to check if a certain statistic should be recorded
 """
-import re
+
 import logging
+import re
 
 logger = logging.getLogger("openlibrary.stats_filters")
 
 import web
+
 from infogami import config
 
 

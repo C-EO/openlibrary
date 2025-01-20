@@ -1,6 +1,6 @@
 $def with (get_results)
 
-$ q = query_param('q', '')
+$ q = query_param('q', '').strip()
 $ results_per_page = 100
 $ page = query_param('page')
 $if page:
@@ -9,7 +9,7 @@ $else:
     $ page = 1
 $ offset = (page - 1) * results_per_page
 
-$var title: Search Open Library for "$q"
+$var title: $_('Search Open Library for "%(query)s"', query=q)
 $ sort = query_param('sort', None)
 
 <div id="contentHead">
@@ -19,13 +19,12 @@ $ sort = query_param('sort', None)
 <div id="contentBody">
   $:macros.SearchNavigation()
 
-  <form class="siteSearch olform" action="">
-    <input type="text" class="larger" name="q" size="100" value="$q"/>
-    <input type="submit"  class="larger" value="$_('Search')"/>
-  </form>
-</div>
+  <div class="section">
+    <form class="siteSearch olform" action="">
+        $:render_template("search/searchbox", q=q)
+    </form>
+  </div>
 
-<div id="contentMeta">
     $ results = get_results(q, offset=offset, limit=results_per_page, sort=sort)
 
     $if q and results.error:
@@ -38,30 +37,36 @@ $ sort = query_param('sort', None)
 
     $if q and not results.error:
         $if results.num_found:
-            <div class="search-results-stats">$ungettext('1 hit', '%(count)s hits', results.num_found, count=commify(results.num_found))
+            <div class="search-results-stats">$ungettext('%(count)s hit', '%(count)s hits', results.num_found, count=commify(results.num_found))
               $if results.num_found > 1:
                 $:render_template("search/sort_options.html", selected_sort=sort, search_scheme="authors")
               $ user_can_merge = ctx.user and ("merge-authors" in ctx.features or ctx.user.is_admin())
               $if results.num_found >= 2 and user_can_merge:
-                $ keys = '&'.join('key=%s' % doc['key'].split("/")[-1] for doc in results.docs)
-                <div class="mergeThis">$_('Is the same author listed twice?') <a class="large sansserif" href="/authors/merge?$keys">$_('Merge authors')</a></div>
+                $ keys = ','.join(doc['key'].split("/")[-1] for doc in results.docs)
+                <div class="mergeThis">$_('Is the same author listed twice?') <a class="large sansserif" href="/authors/merge?records=$keys">$_('Merge authors')</a></div>
             </div>
         $else:
-            <p class="sansserif red collapse">$_('No hits')</p>
-
+            <center>
+                <div class="red">$:_('No <strong>authors</strong> directly matched your search')</div>
+                <hr>
+              </center>
+              <div id="fulltext-search-suggestion" data-query="$q">
+                  $:macros.LoadingIndicator(_("Checking Search Inside matches"))
+              </div>
+       $if results.num_found:
         <ul class="authorList list-books">
         $for doc in results.docs:
             $ n = doc['name']
             $ num = doc['work_count']
-            $ wc = ungettext("1 book", "%(count)d books", num, count=num)
+            $ wc = ungettext("%(count)d book", "%(count)d books", num, count=num)
             $ date = ''
             $if 'birth_date' in doc or 'death_date' in doc:
                 $ date = doc.get('birth_date', '') + ' - ' + doc.get('death_date', '')
             $elif 'date' in doc:
                 $ date = doc['date']
             <li class="searchResultItem">
-	      <img src="$get_coverstore_public_url()/a/olid/$(doc['key'].split('/')[-1])-M.jpg" itemprop="image" class="cover author" alt="Photo of $n">
-	      <div>
+	      <img src="$get_coverstore_public_url()/a/olid/$(doc['key'].split('/')[-1])-M.jpg" itemprop="image" class="cover author" alt="$_('Photo of %(author)s', author=n)">
+	      <div class="details">
 		<a href="$doc['key']" class="larger">$n</a>&nbsp;<span class="brown small">$date</span><br />
 		<span class="small grey"><b>$wc</b>
                 $if 'top_subjects' in doc:
@@ -73,5 +78,5 @@ $ sort = query_param('sort', None)
 
         $:macros.Pager(page, results.num_found, results_per_page)
   </div>
-  <div class="clearfix"></div>
+
 </div>

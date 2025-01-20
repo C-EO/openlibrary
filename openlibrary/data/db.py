@@ -20,19 +20,20 @@ How to use:
 Each doc is a storage object with "id", "key", "revision" and "data".
 """
 
-from openlibrary.utils import olmemcache
-import json
-import web
 import datetime
+import json
 import sys
 import time
 
+import web
+
+from openlibrary.utils import olmemcache
+
 __all__ = [
+    "iterdocs",
+    "longquery",
     "setup_database",
     "setup_memcache",
-    "longquery",
-    "iterdocs",
-    # "get_docs",  # "get_docs()" is not defined.
     "update_docs",
 ]
 
@@ -111,16 +112,16 @@ def _fill_data(docs):
             return []
         return db.query(
             "SELECT thing.id, thing.key, data.revision, data.data"
-            + " FROM thing, data"
-            + " WHERE thing.id = data.thing_id"
-            + " AND thing.latest_revision = data.revision"
-            + " AND key in $keys",
+            " FROM thing, data"
+            " WHERE thing.id = data.thing_id"
+            " AND thing.latest_revision = data.revision"
+            " AND key in $keys",
             vars=locals(),
         )
 
     keys = [doc.key for doc in docs]
 
-    d = mc and mc.get_multi(keys) or {}
+    d = (mc and mc.get_multi(keys)) or {}
     debug(f"{len(d)}/{len(keys)} found in memcache")
 
     keys = [doc.key for doc in docs if doc.key not in d]
@@ -186,7 +187,7 @@ def update_docs(docs, comment, author, ip="127.0.0.1"):
         db.multiple_insert(
             "version",
             [
-                dict(thing_id=doc.id, transaction_id=tx_id, revision=doc.revision)
+                {"thing_id": doc.id, "transaction_id": tx_id, "revision": doc.revision}
                 for doc in docs
             ],
             seqname=False,

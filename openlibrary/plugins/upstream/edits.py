@@ -2,12 +2,13 @@
 """
 
 import json
+
 import web
 
-from openlibrary import accounts
-from openlibrary.core.edits import CommunityEditsQueue, get_status_for_view
 from infogami.utils import delegate
 from infogami.utils.view import render_template
+from openlibrary import accounts
+from openlibrary.core.edits import CommunityEditsQueue, get_status_for_view
 
 
 def response(status='ok', **kwargs):
@@ -32,7 +33,13 @@ class community_edits_queue(delegate.page):
 
     def GET(self):
         i = web.input(
-            page=1, limit=25, mode="open", submitter=None, reviewer=None, order='desc'
+            page=1,
+            limit=25,
+            mode="open",
+            submitter=None,
+            reviewer=None,
+            order='desc',
+            status=None,
         )
         merge_requests = CommunityEditsQueue.get_requests(
             page=int(i.page),
@@ -41,6 +48,7 @@ class community_edits_queue(delegate.page):
             submitter=i.submitter,
             reviewer=i.reviewer,
             order=f'updated {i.order}',
+            status=i.status,
         ).list()
 
         total_found = {
@@ -50,10 +58,19 @@ class community_edits_queue(delegate.page):
             "closed": CommunityEditsQueue.get_counts_by_mode(
                 mode='closed', submitter=i.submitter, reviewer=i.reviewer
             ),
+            "submitters": CommunityEditsQueue.get_submitters(),
+            "reviewers": CommunityEditsQueue.get_reviewers(),
         }
+
+        librarians = {
+            'submitters': CommunityEditsQueue.get_submitters(),
+            'reviewers': CommunityEditsQueue.get_reviewers(),
+        }
+
         return render_template(
-            'merge_queue/merge_queue',
+            'merge_request_table/merge_request_table',
             total_found,
+            librarians,
             merge_requests=merge_requests,
         )
 
@@ -170,7 +187,7 @@ class community_edits_queue(delegate.page):
             primary_param = f'&primary={primary}' if primary else ''
             return f'/works/merge?records={",".join(olids)}{primary_param}'
         elif mr_type == CommunityEditsQueue.TYPE['AUTHOR_MERGE']:
-            return f'/authors/merge?key={"&key=".join(olids)}'
+            return f'/authors/merge?records={",".join(olids)}'
         return ''
 
     @staticmethod
@@ -186,16 +203,6 @@ class community_edits_queue(delegate.page):
                 if author and author.name:
                     return author.name
         return 'Unknown record'
-
-
-class ui_partials(delegate.page):
-    path = '/merges/partials'
-
-    def GET(self):
-        i = web.input(type=None, comment='')
-        if i.type == 'comment':
-            component = render_template('merge_queue/comment', comment_str=i.comment)
-            return delegate.RawText(component)
 
 
 def setup():
